@@ -8,6 +8,9 @@ namespace WindowsGSM.DiscordBot
     static class Configs
     {
 		private static readonly string _botPath = ServerPath.Get(ServerPath.FolderName.Configs, "discordbot");
+		private const int DefaultDashboardRefreshRate = 5;
+		private const int MinimumDashboardRefreshRate = 1;
+		private const int MaximumDashboardRefreshRate = 1440;
 
 		public static void CreateConfigs()
 		{
@@ -23,7 +26,7 @@ namespace WindowsGSM.DiscordBot
 		public static string GetCommandsList()
 		{
 			string prefix = GetBotPrefix();
-			return $"{prefix}wgsm check\n{prefix}wgsm list\n{prefix}wgsm start <SERVERID>\n{prefix}wgsm stop <SERVERID>\n{prefix}wgsm stopall\n{prefix}wgsm restart <SERVERID>\n{prefix}wgsm update <SERVERID>\n{prefix}wgsm send <SERVERID> <COMMAND>\n{prefix}wgsm backup <SERVERID>\n{prefix}wgsm stats\n{prefix}wgsm send <SERVERIID> <COMMAND_TO_SEND>\n{prefix}wgsm sendr <SERVERIID> <COMMAND_TO_SEND>";
+			return $"{prefix}wgsm check\n{prefix}wgsm list\n{prefix}wgsm start <SERVERID>\n{prefix}wgsm stop <SERVERID>\n{prefix}wgsm stopall\n{prefix}wgsm restart <SERVERID>\n{prefix}wgsm update <SERVERID>\n{prefix}wgsm send <SERVERID> <COMMAND>\n{prefix}wgsm backup <SERVERID>\n{prefix}wgsm stats\n{prefix}wgsm send <SERVERID> <COMMAND_TO_SEND>\n{prefix}wgsm sendr <SERVERID> <COMMAND_TO_SEND>";
 		}
 
 		public static string GetBotPrefix()
@@ -115,18 +118,30 @@ namespace WindowsGSM.DiscordBot
 		{
 			try
 			{
-				return int.Parse(File.ReadAllText(Path.Combine(_botPath, "refreshrate.txt")).Trim());
+				if (!int.TryParse(File.ReadAllText(Path.Combine(_botPath, "refreshrate.txt")).Trim(), out int rate))
+				{
+					return DefaultDashboardRefreshRate;
+				}
+
+				return ClampDashboardRefreshRate(rate);
 			}
 			catch
 			{
-				return 5;
+				return DefaultDashboardRefreshRate;
 			}
 		}
 
 		public static void SetDashboardRefreshRate(int rate)
 		{
 			Directory.CreateDirectory(_botPath);
-			File.WriteAllText(Path.Combine(_botPath, "refreshrate.txt"), rate.ToString());
+			File.WriteAllText(Path.Combine(_botPath, "refreshrate.txt"), ClampDashboardRefreshRate(rate).ToString());
+		}
+
+		private static int ClampDashboardRefreshRate(int rate)
+		{
+			if (rate < MinimumDashboardRefreshRate) { return MinimumDashboardRefreshRate; }
+			if (rate > MaximumDashboardRefreshRate) { return MaximumDashboardRefreshRate; }
+			return rate;
 		}
 
 		public static List<string> GetBotAdminIds()
@@ -137,7 +152,11 @@ namespace WindowsGSM.DiscordBot
 				var lines = File.ReadAllLines(Path.Combine(_botPath, "adminIDs.txt"));
 				foreach (var line in lines)
 				{
+					if (string.IsNullOrWhiteSpace(line)) { continue; }
+
 					string[] items = line.Split(new char[] { ' ' }, 2);
+					if (string.IsNullOrWhiteSpace(items[0])) { continue; }
+
 					adminIds.Add(items[0]);
 				}
 				return adminIds;
@@ -155,10 +174,17 @@ namespace WindowsGSM.DiscordBot
 				var lines = File.ReadAllLines(Path.Combine(_botPath, "adminIDs.txt"));
 				foreach (var line in lines)
 				{
+					if (string.IsNullOrWhiteSpace(line)) { continue; }
+
 					string[] items = line.Split(new[] { ' ' }, 2);
 					if (items[0] == adminId)
 					{
-						return items[1].Trim().Split(',').Select(s => s.Trim()).ToList();
+						if (items.Length < 2 || string.IsNullOrWhiteSpace(items[1]))
+						{
+							return new List<string>();
+						}
+
+						return items[1].Trim().Split(',').Select(s => s.Trim()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
 					}
 				}
 
@@ -178,7 +204,11 @@ namespace WindowsGSM.DiscordBot
 				var lines = File.ReadAllLines(Path.Combine(_botPath, "adminIDs.txt"));
 				foreach (var line in lines)
 				{
+					if (string.IsNullOrWhiteSpace(line)) { continue; }
+
 					string[] items = line.Split(new[] { ' ' }, 2);
+					if (string.IsNullOrWhiteSpace(items[0])) { continue; }
+
 					adminList.Add((items[0], items.Length == 1 ? string.Empty : items[1]));
 				}
 				return adminList;

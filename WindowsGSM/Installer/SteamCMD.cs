@@ -21,6 +21,7 @@ namespace WindowsGSM.Installer
         private static readonly string _installPath = ServerPath.GetBin("steamcmd");
         private static readonly string _userDataPath = Path.Combine(_installPath, "userData.txt");
         private static readonly Dictionary<string, SteamBranchOptions> _pendingSteamBranchOptions = new Dictionary<string, SteamBranchOptions>();
+        private static string _lastDownloadError;
         private string _param;
         public string Error;
 
@@ -47,15 +48,23 @@ namespace WindowsGSM.Installer
                 await WindowsGSM.Functions.Http.DownloadFileAsync("https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip", zipPath);
 
                 //Extract steamcmd.zip and delete the zip
-                await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, _installPath));
-                await Task.Run(() => File.Delete(zipPath));
+                await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, _installPath, true));
+                await Task.Run(() =>
+                {
+                    if (File.Exists(zipPath))
+                    {
+                        File.Delete(zipPath);
+                    }
+                });
 
                 await Bootstrap();
 
+                _lastDownloadError = null;
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                _lastDownloadError = ex.Message;
                 return false;
             }
         }
@@ -98,23 +107,20 @@ namespace WindowsGSM.Installer
 
                 if (File.Exists(_userDataPath))
                 {
-                    string[] lines = File.ReadAllLines(_userDataPath);
-
-                    foreach (string line in lines)
+                    foreach (string line in File.ReadAllLines(_userDataPath))
                     {
-                        if (line[0] == '/' && line[1] == '/')
+                        if (!TryReadSteamCredentialLine(line, out string key, out string value))
                         {
                             continue;
                         }
 
-                        string[] keyvalue = line.Split(new char[] { '=' }, 2);
-                        if (keyvalue[0] == "steamUser")
+                        if (key == "steamUser")
                         {
-                            steamUser = keyvalue[1].Trim('\"');
+                            steamUser = value;
                         }
-                        else if (keyvalue[0] == "steamPass")
+                        else if (key == "steamPass")
                         {
-                            steamPass = keyvalue[1].Trim('\"');
+                            steamPass = value;
                         }
                     }
                 }
@@ -271,6 +277,30 @@ namespace WindowsGSM.Installer
             return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
+        private static bool TryReadSteamCredentialLine(string line, out string key, out string value)
+        {
+            key = null;
+            value = null;
+
+            if (string.IsNullOrWhiteSpace(line)) { return false; }
+
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith("//")) { return false; }
+
+            string[] keyValue = trimmed.Split(new[] { '=' }, 2);
+            if (keyValue.Length != 2 || string.IsNullOrWhiteSpace(keyValue[0])) { return false; }
+
+            key = keyValue[0].Trim();
+            value = keyValue[1].Trim().Trim('"');
+            return true;
+        }
+
+        private static string EnsureOverrideMinOs(string custom)
+        {
+            if (string.IsNullOrWhiteSpace(custom)) { return "-overrideminos"; }
+            return custom.Contains("-overrideminos", StringComparison.OrdinalIgnoreCase) ? custom.Trim() : $"{custom.Trim()} -overrideminos";
+        }
+
         // New parameter script
         private static (string, string) GetSteamUsernamePassword()
         {
@@ -282,12 +312,12 @@ namespace WindowsGSM.Installer
             string username = null, password = null;
             foreach (var line in File.ReadAllLines(_userDataPath).ToList())
             {
-                if (line[0] == '/' && line[1] == '/') { continue; } // Skip the line if it is a comment line
-                var keyValue = line.Split(new[] { '=' }, 2);
-                switch (keyValue[0])
+                if (!TryReadSteamCredentialLine(line, out string key, out string value)) { continue; }
+
+                switch (key)
                 {
-                    case "steamUser": username = keyValue[1].Substring(1, keyValue[1].Length - 2); break;
-                    case "steamPass": password = keyValue[1].Substring(1, keyValue[1].Length - 2); break;
+                    case "steamUser": username = value; break;
+                    case "steamPass": password = value; break;
                 }
             }
 
@@ -302,7 +332,7 @@ namespace WindowsGSM.Installer
                 //If steamcmd.exe not exists, download steamcmd.exe
                 if (!await Download())
                 {
-                    Error = $"Fail to download {_exeFile}";
+                    Error = string.IsNullOrWhiteSpace(_lastDownloadError) ? $"Fail to download {_exeFile}" : $"Fail to download {_exeFile}: {_lastDownloadError}";
                     return null;
                 }
             }
@@ -321,8 +351,7 @@ namespace WindowsGSM.Installer
                 await firewall.AddRule();
             }
 
-            if (string.IsNullOrWhiteSpace(_param) || !_param.Contains("-overrideminos"))
-                _param = _param + " -overrideminos";
+            _param = EnsureOverrideMinOs(_param);
             Process p = new Process
             {
                 StartInfo =
@@ -359,8 +388,7 @@ namespace WindowsGSM.Installer
         // New
         public static async Task<(Process, string)> UpdateEx(string serverId, string appId, bool validate = true, bool loginAnonymous = true, string modName = null, string custom = null, bool embedConsole = true)
         {
-            if (string.IsNullOrWhiteSpace(custom) || !custom.Contains("-overrideminos"))
-                custom = custom + " -overrideminos";
+            custom = EnsureOverrideMinOs(custom);
             string param = GetParameter(ServerPath.GetServersServerFiles(serverId), appId, validate, loginAnonymous, modName, custom, serverId);
             if (param == null)
             {
@@ -370,7 +398,7 @@ namespace WindowsGSM.Installer
             string exePath = Path.Combine(_installPath, _exeFile);
             if (!File.Exists(exePath) && !await Download())
             {
-                return (null, "Unable to download steamcmd");
+                return (null, string.IsNullOrWhiteSpace(_lastDownloadError) ? "Unable to download steamcmd" : $"Unable to download steamcmd: {_lastDownloadError}");
             }
 
             // Fix the SteamCMD issue
@@ -509,7 +537,7 @@ namespace WindowsGSM.Installer
                 //If steamcmd.exe not exists, download steamcmd.exe
                 if (!await Download())
                 {
-                    Error = "Fail to download steamcmd.exe";
+                    Error = string.IsNullOrWhiteSpace(_lastDownloadError) ? "Fail to download steamcmd.exe" : $"Fail to download steamcmd.exe: {_lastDownloadError}";
                     return string.Empty;
                 }
             }
@@ -575,7 +603,7 @@ namespace WindowsGSM.Installer
             {
                 if (!await Download())
                 {
-                    Error = "Fail to download steamcmd.exe";
+                    Error = string.IsNullOrWhiteSpace(_lastDownloadError) ? "Fail to download steamcmd.exe" : $"Fail to download steamcmd.exe: {_lastDownloadError}";
                     return new List<string>();
                 }
             }

@@ -13,6 +13,7 @@ namespace WindowsGSM.Functions
         private static string JavaAbsoluteInstallPath = Path.Combine(GetProgramFilesAbsolutePath(), "Java");
         private static string JreAbsoluteInstallPath = Path.Combine(JavaAbsoluteInstallPath, "jdk-22");
         private static string JreDownloadLink = "https://download.oracle.com/java/22/archive/jdk-22.0.2_windows-x64_bin.exe";
+        private static readonly TimeSpan JreInstallTimeout = TimeSpan.FromMinutes(10);
 
         public struct JREDownloadTaskResult : IEquatable<JREDownloadTaskResult>
         {
@@ -34,7 +35,7 @@ namespace WindowsGSM.Functions
         public static async Task<JREDownloadTaskResult> DownloadJREToServer(string serverID, string version = "22")
         {
             string serverFilesPath = Functions.ServerPath.GetServersServerFiles(serverID);
-            
+
             //Download jre-8u231-windows-i586-iftw.exe from https://www.java.com/en/download/manual.jsp
             string jrePath = Path.Combine(serverFilesPath, JreInstallFileName);
             JREDownloadTaskResult result;
@@ -43,6 +44,8 @@ namespace WindowsGSM.Functions
 
             try
             {
+                Directory.CreateDirectory(serverFilesPath);
+
                 //Run jre-8u231-windows-i586-iftw.exe to install Java
                 await Http.DownloadFileAsync(JreDownloadLink, jrePath);
                 string installPath = Functions.ServerPath.GetServersServerFiles(serverID);
@@ -54,22 +57,64 @@ namespace WindowsGSM.Functions
                     StartInfo = psi,
                     EnableRaisingEvents = true
                 };
-                p.Start();
 
-                //wait until the java.exe can be found in the newly installed jre folder
-                while (FindJavaExecutableAbsolutePathInJavaRuntimeDirectory(JreAbsoluteInstallPath).Length == 0)
+                using (p)
                 {
-                    await Task.Delay(100);
+                    if (!p.Start())
+                    {
+                        result.error = $"Could not start Java installer '{JreInstallFileName}'.";
+                        result.installed = false;
+                        return result;
+                    }
+
+                    DateTime deadline = DateTime.UtcNow.Add(JreInstallTimeout);
+
+                    // Wait until java.exe appears, the installer exits with a failure, or the timeout is reached.
+                    while (FindJavaExecutableAbsolutePathInJavaRuntimeDirectory(JreAbsoluteInstallPath).Length == 0)
+                    {
+                        if (p.HasExited && p.ExitCode != 0)
+                        {
+                            result.error = $"Java installer exited with code {p.ExitCode}.";
+                            result.installed = false;
+                            return result;
+                        }
+
+                        if (DateTime.UtcNow >= deadline)
+                        {
+                            TryStopProcess(p);
+                            result.error = $"Timed out after {JreInstallTimeout.TotalMinutes:0} minutes waiting for Java to install to '{JreAbsoluteInstallPath}'. Installer process was stopped.";
+                            result.installed = false;
+                            return result;
+                        }
+
+                        await Task.Delay(500);
+                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                result.error = String.Concat("Could not install JRE '", JreInstallFileName, "'");
+                result.error = String.Concat("Could not install JRE '", JreInstallFileName, "': ", ex.Message);
                 result.installed = false;
                 return result;
             }
 
             return result;
+        }
+
+        private static void TryStopProcess(Process process)
+        {
+            try
+            {
+                if (process != null && !process.HasExited)
+                {
+                    process.Kill(true);
+                    process.WaitForExit(5000);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup after installer timeout.
+            }
         }
 
         public static bool IsJREInstalled()

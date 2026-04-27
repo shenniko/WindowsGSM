@@ -1,3 +1,35 @@
+# WindowsGSM Changes / Release Notes
+
+From `v1.26.3` onward, this file follows normal release-note style entries: newest release first, with changes listed relative to the previous release.
+
+The older **Historical Changes Since Original 1.26.0** section below is kept as a one-time comparison against the original/base `1.26.0` work.
+
+## v1.26.3
+
+- Allowed force-stop operations to interrupt an active operation on the selected server, preserving the emergency recovery path for stuck start/stop/restart transitions.
+- Java installer timeout now stops the installer process before returning failure, preventing overlapping installer instances on retry.
+- Bumped application, assembly, and file versions to `1.26.3`.
+
+## v1.26.2
+
+- Added shared operation state tracking for install, start, stop, restart, update, backup, restore, delete, force stop, and addon actions.
+- Disabled conflicting toolbar/menu actions while an operation is running.
+- Added an operation status display with elapsed time and last-error text.
+- Routed Discord bot start, stop, restart, update, and backup actions through the same operation guard as the UI.
+- Bumped application, assembly, and file versions to `1.26.2`.
+
+## v1.26.1
+
+- Hardened SteamCMD credential/config parsing so blank, short, malformed, or unquoted `userData.txt` lines do not crash install/update flows.
+- Improved SteamCMD extraction and download diagnostics.
+- Fixed RCON endpoint validation and ensured RCON connections are disposed after success or failure.
+- Fixed Discord bot command help typos.
+- Hardened Discord bot admin ID parsing and dashboard refresh-rate handling.
+- Added Java installer timeout handling and clearer Java install failure messages.
+- Bumped application, assembly, and file versions to `1.26.1`.
+
+## Historical Changes Since Original 1.26.0
+
 - Updated to [Dotnet8](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-desktop-8.0.16-windows-x64-installer)
 - Extended Crontab Config
   - Crontabs can now also Execute Windows commands and send Server Console Commands by adding *.csv files to the server config folder (servers\\%ServerID%\\configs\\Crontab) (or click Browse => Server Configs in WindowsGSM while the server is marked, then create the folder Crontab if not existing.)

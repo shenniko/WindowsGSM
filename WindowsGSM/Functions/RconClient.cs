@@ -2,7 +2,9 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 
 namespace WindowsGSM.Functions
@@ -15,11 +17,14 @@ namespace WindowsGSM.Functions
             Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "logs"));
             try
             {
+                Connection?.Dispose();
                 Connection = new RCON(GetEndpoint(ip, port), password);
                 await Connection.ConnectAsync();
             }
             catch (Exception e)
             {
+                Connection?.Dispose();
+                Connection = null;
                 string logPath = Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "logs");
                 Directory.CreateDirectory(logPath);
                 //we don't have the correct Log here, so we just return and let the caller take care of it
@@ -30,9 +35,30 @@ namespace WindowsGSM.Functions
 
         private static IPEndPoint GetEndpoint(string ip, int port)
         {
-            var endpoint = IPEndPoint.Parse(ip);
-            endpoint.Port = port;
-            return endpoint;
+            if (string.IsNullOrWhiteSpace(ip))
+            {
+                throw new ArgumentException("RCON IP address is empty.");
+            }
+
+            if (port < IPEndPoint.MinPort || port > IPEndPoint.MaxPort)
+            {
+                throw new ArgumentOutOfRangeException(nameof(port), $"RCON port must be between {IPEndPoint.MinPort} and {IPEndPoint.MaxPort}.");
+            }
+
+            if (IPAddress.TryParse(ip.Trim(), out IPAddress address))
+            {
+                return new IPEndPoint(address, port);
+            }
+
+            IPAddress resolvedAddress = Dns.GetHostAddresses(ip.Trim())
+                .FirstOrDefault(x => x.AddressFamily == AddressFamily.InterNetwork || x.AddressFamily == AddressFamily.InterNetworkV6);
+
+            if (resolvedAddress == null)
+            {
+                throw new FormatException($"RCON host '{ip}' could not be resolved.");
+            }
+
+            return new IPEndPoint(resolvedAddress, port);
         }
 
         public async Task<string> Send(string command)
@@ -52,19 +78,23 @@ namespace WindowsGSM.Functions
 
         public static async Task<string> SendCommandAsync(string ip, int port, string password, string command)
         {
-            var connection = new RCON(GetEndpoint(ip, port), password);
+            RCON connection = null;
 
             try
             {
+                connection = new RCON(GetEndpoint(ip, port), password);
                 await connection.ConnectAsync();
 
                 var response = await connection.SendCommandAsync(command, TimeSpan.FromSeconds(10));
-                connection.Dispose();
                 return response;
             }
             catch (Exception e)
             {
                 return e.Message;
+            }
+            finally
+            {
+                connection?.Dispose();
             }
 
         }

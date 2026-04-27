@@ -741,6 +741,7 @@
                <Button x:Name="button_Update" Cursor="Hand" Content="UPDATE" HorizontalAlignment="Left" Margin="5,5,0,5" Width="112" Height="26" Click="Actions_Update_Click"/>
                <Button x:Name="button_Backup" Cursor="Hand" Content="BACKUP" HorizontalAlignment="Left" Margin="5,5,0,5" Width="112" Height="26" Click="Actions_Backup_Click"/>
                <Button x:Name="button_ManageAddons" Cursor="Hand" Content="MANAGE ADDONS" HorizontalAlignment="Left" Margin="5,5,0,5" Width="112" Height="26" Click="Actions_ManageAddons_Click"/>
+               <TextBlock x:Name="textBlock_OperationStatus" Text="Ready" VerticalAlignment="Center" Margin="12,0,0,0" FontFamily="Consolas" FontSize="12"/>
             </DockPanel>
          </Grid>
          <Grid Height="1" Background="Black" DockPanel.Dock="Top"/>

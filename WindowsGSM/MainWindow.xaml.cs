@@ -176,6 +176,61 @@ namespace WindowsGSM
             public string Message { get; set; }
         }
 
+        private enum ServerOperationKind
+        {
+            Install,
+            Import,
+            Start,
+            Stop,
+            Restart,
+            ForceStop,
+            Update,
+            Backup,
+            Restore,
+            Delete,
+            Addon
+        }
+
+        private sealed class ServerOperationState
+        {
+            public string ServerId { get; set; }
+            public string ServerName { get; set; }
+            public ServerOperationKind Kind { get; set; }
+            public string Description { get; set; }
+            public DateTime StartedAt { get; set; }
+            public string LastError { get; set; }
+        }
+
+        private sealed class ServerOperationScope : IDisposable
+        {
+            private readonly MainWindow _owner;
+            private bool _disposed;
+
+            public ServerOperationScope(MainWindow owner, ServerOperationState state)
+            {
+                _owner = owner;
+                State = state;
+            }
+
+            public ServerOperationState State { get; }
+
+            public void Dispose()
+            {
+                if (_disposed) { return; }
+
+                _disposed = true;
+                _owner.EndServerOperation(this, null);
+            }
+
+            public void Complete(string error)
+            {
+                if (_disposed) { return; }
+
+                _disposed = true;
+                _owner.EndServerOperation(this, error);
+            }
+        }
+
         public static readonly string WGSM_VERSION = "v" + string.Concat(System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString());
         public static readonly int MAX_SERVER = 256;
         public static readonly string WGSM_PATH = GetApplicationPath();
@@ -192,6 +247,11 @@ namespace WindowsGSM
         private readonly List<System.Windows.Controls.CheckBox> _checkBoxes = new List<System.Windows.Controls.CheckBox>();
         private readonly Dictionary<string, System.Windows.Controls.Control> _editConfigCustomSettingControls = new Dictionary<string, System.Windows.Controls.Control>(StringComparer.OrdinalIgnoreCase);
         private bool _editConfigUsesCustomServerSettingSchema;
+        private readonly object _operationLock = new object();
+        private readonly Dictionary<string, ServerOperationState> _serverOperations = new Dictionary<string, ServerOperationState>(StringComparer.OrdinalIgnoreCase);
+        private ServerOperationState _globalOperation;
+        private string _lastOperationError;
+        private DateTime _lastOperationUiRefresh = DateTime.MinValue;
         private readonly Dictionary<string, List<ServerResourceSample>> _serverResourceSamples = new Dictionary<string, List<ServerResourceSample>>();
         private readonly Dictionary<string, ProcessUsageSample> _lastProcessUsageSamples = new Dictionary<string, ProcessUsageSample>();
         private readonly Brush[] _dashboardResourceBrushes =
@@ -216,6 +276,251 @@ namespace WindowsGSM
             string exeDirectory = string.IsNullOrWhiteSpace(exePath) ? null : Path.GetDirectoryName(exePath);
 
             return string.IsNullOrWhiteSpace(exeDirectory) ? AppContext.BaseDirectory : exeDirectory;
+        }
+
+        private bool TryBeginServerOperation(ServerTable server, ServerOperationKind kind, out ServerOperationScope scope)
+        {
+            scope = null;
+            if (server == null) { return false; }
+
+            lock (_operationLock)
+            {
+                if (_globalOperation != null)
+                {
+                    Log(server.ID, $"[NOTICE] Cannot run {GetOperationDescription(kind)} while {_globalOperation.Description} is running.");
+                    RefreshOperationUi();
+                    return false;
+                }
+
+                if (_serverOperations.Count > 0)
+                {
+                    ServerOperationState anyRunning = _serverOperations.Values.OrderBy(x => x.StartedAt).First();
+                    Log(server.ID, $"[NOTICE] Cannot run {GetOperationDescription(kind)} while {anyRunning.Description} is running on {anyRunning.ServerName ?? anyRunning.ServerId}.");
+                    RefreshOperationUi();
+                    return false;
+                }
+
+                if (_serverOperations.TryGetValue(server.ID, out ServerOperationState running))
+                {
+                    Log(server.ID, $"[NOTICE] Cannot run {GetOperationDescription(kind)} while {running.Description} is running.");
+                    RefreshOperationUi();
+                    return false;
+                }
+
+                var state = new ServerOperationState
+                {
+                    ServerId = server.ID,
+                    ServerName = server.Name,
+                    Kind = kind,
+                    Description = GetOperationDescription(kind),
+                    StartedAt = DateTime.Now
+                };
+                _serverOperations[server.ID] = state;
+                scope = new ServerOperationScope(this, state);
+            }
+
+            Log(server.ID, $"Operation: {scope.State.Description} started");
+            RefreshOperationUi();
+            return true;
+        }
+
+        private bool TryBeginGlobalOperation(ServerOperationKind kind, string description, out ServerOperationScope scope)
+        {
+            scope = null;
+
+            lock (_operationLock)
+            {
+                if (_globalOperation != null)
+                {
+                    RefreshOperationUi();
+                    return false;
+                }
+
+                if (_serverOperations.Count > 0)
+                {
+                    RefreshOperationUi();
+                    return false;
+                }
+
+                var state = new ServerOperationState
+                {
+                    Kind = kind,
+                    Description = string.IsNullOrWhiteSpace(description) ? GetOperationDescription(kind) : description,
+                    StartedAt = DateTime.Now
+                };
+                _globalOperation = state;
+                scope = new ServerOperationScope(this, state);
+            }
+
+            Log("System", $"Operation: {scope.State.Description} started");
+            RefreshOperationUi();
+            return true;
+        }
+
+        private async Task<bool> RunServerOperation(ServerTable server, ServerOperationKind kind, Func<Task<bool>> action)
+        {
+            if (!TryBeginServerOperation(server, kind, out ServerOperationScope operation)) { return false; }
+
+            try
+            {
+                bool succeeded = await action();
+                operation.Complete(succeeded ? null : $"{operation.State.Description} did not complete successfully.");
+                return succeeded;
+            }
+            catch (Exception ex)
+            {
+                Log(server.ID, $"[ERROR] {operation.State.Description} failed: {ex.Message}");
+                operation.Complete(ex.Message);
+                return false;
+            }
+        }
+
+        private async Task<bool> RunGlobalOperation(ServerOperationKind kind, string description, Func<Task<bool>> action)
+        {
+            if (!TryBeginGlobalOperation(kind, description, out ServerOperationScope operation)) { return false; }
+
+            try
+            {
+                bool succeeded = await action();
+                operation.Complete(succeeded ? null : $"{operation.State.Description} did not complete successfully.");
+                return succeeded;
+            }
+            catch (Exception ex)
+            {
+                Log("System", $"[ERROR] {operation.State.Description} failed: {ex.Message}");
+                operation.Complete(ex.Message);
+                return false;
+            }
+        }
+
+        private void EndServerOperation(ServerOperationScope scope, string error)
+        {
+            if (scope?.State == null) { return; }
+
+            ServerOperationState state = scope.State;
+            TimeSpan elapsed = DateTime.Now - state.StartedAt;
+
+            lock (_operationLock)
+            {
+                state.LastError = error;
+                if (!string.IsNullOrWhiteSpace(error))
+                {
+                    _lastOperationError = $"{state.Description}: {error}";
+                }
+
+                if (string.IsNullOrWhiteSpace(state.ServerId))
+                {
+                    if (ReferenceEquals(_globalOperation, state))
+                    {
+                        _globalOperation = null;
+                    }
+                }
+                else if (_serverOperations.TryGetValue(state.ServerId, out ServerOperationState running) && ReferenceEquals(running, state))
+                {
+                    _serverOperations.Remove(state.ServerId);
+                }
+            }
+
+            string message = string.IsNullOrWhiteSpace(error)
+                ? $"Operation: {state.Description} finished in {elapsed:mm\\:ss}"
+                : $"Operation: {state.Description} failed in {elapsed:mm\\:ss} - {error}";
+            Log(string.IsNullOrWhiteSpace(state.ServerId) ? "System" : state.ServerId, message);
+            RefreshOperationUi();
+        }
+
+        private bool IsServerOperationRunning(string serverId)
+        {
+            if (string.IsNullOrWhiteSpace(serverId)) { return false; }
+
+            lock (_operationLock)
+            {
+                return _serverOperations.ContainsKey(serverId);
+            }
+        }
+
+        private bool IsAnyOperationRunning()
+        {
+            lock (_operationLock)
+            {
+                return _globalOperation != null || _serverOperations.Count > 0;
+            }
+        }
+
+        private string GetSelectedServerOperationText(string serverId)
+        {
+            lock (_operationLock)
+            {
+                if (!string.IsNullOrWhiteSpace(serverId) && _serverOperations.TryGetValue(serverId, out ServerOperationState state))
+                {
+                    return $"{state.Description} ({(DateTime.Now - state.StartedAt):mm\\:ss})";
+                }
+
+                return null;
+            }
+        }
+
+        private string GetOperationDescription(ServerOperationKind kind)
+        {
+            switch (kind)
+            {
+                case ServerOperationKind.Install: return "Install";
+                case ServerOperationKind.Import: return "Import";
+                case ServerOperationKind.Start: return "Start";
+                case ServerOperationKind.Stop: return "Stop";
+                case ServerOperationKind.Restart: return "Restart";
+                case ServerOperationKind.ForceStop: return "Force stop";
+                case ServerOperationKind.Update: return "Update";
+                case ServerOperationKind.Backup: return "Backup";
+                case ServerOperationKind.Restore: return "Restore";
+                case ServerOperationKind.Delete: return "Delete";
+                case ServerOperationKind.Addon: return "Addon action";
+                default: return kind.ToString();
+            }
+        }
+
+        private void RefreshOperationUi()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(RefreshOperationUi));
+                return;
+            }
+
+            try
+            {
+                UpdateOperationStatusText();
+                DataGrid_RefreshElements();
+            }
+            catch
+            {
+                // UI may still be initializing.
+            }
+        }
+
+        private void UpdateOperationStatusText()
+        {
+            if (textBlock_OperationStatus == null) { return; }
+
+            lock (_operationLock)
+            {
+                if (_globalOperation != null)
+                {
+                    textBlock_OperationStatus.Text = $"{_globalOperation.Description} running ({(DateTime.Now - _globalOperation.StartedAt):mm\\:ss})";
+                    return;
+                }
+
+                if (_serverOperations.Count > 0)
+                {
+                    var operation = _serverOperations.Values.OrderBy(x => x.StartedAt).First();
+                    string serverName = string.IsNullOrWhiteSpace(operation.ServerName) ? operation.ServerId : operation.ServerName;
+                    textBlock_OperationStatus.Text = $"{operation.Description} running on {serverName} ({(DateTime.Now - operation.StartedAt):mm\\:ss})";
+                    return;
+                }
+
+                textBlock_OperationStatus.Text = string.IsNullOrWhiteSpace(_lastOperationError)
+                    ? "Ready"
+                    : $"Ready - last error: {_lastOperationError}";
+            }
         }
 
         private static T FindVisualParent<T>(DependencyObject child) where T : DependencyObject
@@ -1138,6 +1443,12 @@ namespace WindowsGSM
             while (true)
             {
                 await Task.Delay(100);
+                if (IsAnyOperationRunning() && (DateTime.Now - _lastOperationUiRefresh).TotalSeconds >= 1)
+                {
+                    _lastOperationUiRefresh = DateTime.Now;
+                    UpdateOperationStatusText();
+                }
+
                 var row = (ServerTable)ServerGrid.SelectedItem;
                 if (row != null)
                 {
@@ -1666,7 +1977,9 @@ namespace WindowsGSM
 #if DEBUG
                 Console.WriteLine("Datagrid Changed");
 #endif
-                if (GetServerMetadata(row.ID).ServerStatus == ServerStatus.Stopped)
+                bool serverOperationRunning = IsServerOperationRunning(row.ID);
+                bool anyOperationRunning = IsAnyOperationRunning();
+                if (!serverOperationRunning && !anyOperationRunning && GetServerMetadata(row.ID).ServerStatus == ServerStatus.Stopped)
                 {
                     button_Start.IsEnabled = true;
                     button_Stop.IsEnabled = false;
@@ -1678,7 +1991,7 @@ namespace WindowsGSM
                     textbox_servercommand.IsEnabled = false;
                     button_servercommand.IsEnabled = false;
                 }
-                else if (GetServerMetadata(row.ID).ServerStatus == ServerStatus.Started)
+                else if (!serverOperationRunning && !anyOperationRunning && GetServerMetadata(row.ID).ServerStatus == ServerStatus.Started)
                 {
                     button_Start.IsEnabled = false;
                     button_Stop.IsEnabled = true;
@@ -1711,7 +2024,7 @@ namespace WindowsGSM
                     button_servercommand.IsEnabled = false;
                 }
 
-                switch (GetServerMetadata(row.ID).ServerStatus)
+                switch (serverOperationRunning || anyOperationRunning ? ServerStatus.Stopped : GetServerMetadata(row.ID).ServerStatus)
                 {
                     case ServerStatus.Restarting:
                     case ServerStatus.Restarted:
@@ -1723,7 +2036,7 @@ namespace WindowsGSM
                     default: button_Kill.IsEnabled = false; break;
                 }
 
-                button_ManageAddons.IsEnabled = ServerAddon.IsGameSupportManageAddons(row.Game);
+                button_ManageAddons.IsEnabled = !serverOperationRunning && !anyOperationRunning && ServerAddon.IsGameSupportManageAddons(row.Game);
                 if (GetServerMetadata(row.ID).ServerStatus == ServerStatus.Deleting || GetServerMetadata(row.ID).ServerStatus == ServerStatus.Restoring)
                 {
                     button_ManageAddons.IsEnabled = false;
@@ -1739,7 +2052,8 @@ namespace WindowsGSM
                     _checkBoxes[i].IsChecked = affinity[i] == '1';
                 }
 
-                button_Status.Content = row.Status.ToUpper();
+                string operationText = GetSelectedServerOperationText(row.ID);
+                button_Status.Content = string.IsNullOrWhiteSpace(operationText) ? row.Status.ToUpper() : operationText.ToUpper();
                 button_Status.Background = (GetServerMetadata(row.ID).ServerStatus == ServerStatus.Started) ? System.Windows.Media.Brushes.LimeGreen : System.Windows.Media.Brushes.Orange;
 
                 var gameServer = GameServer.Data.Class.Get(row.Game, pluginList: PluginsList);
@@ -1804,6 +2118,12 @@ namespace WindowsGSM
             var selectedgame = (Images.Row)comboBox_InstallGameServer.SelectedItem;
             if (string.IsNullOrWhiteSpace(textbox_InstallServerName.Text) || selectedgame == null) { return; }
 
+            if (!TryBeginGlobalOperation(ServerOperationKind.Install, "Install game server", out ServerOperationScope operation)) { return; }
+
+            string operationError = null;
+
+            try
+            {
             var newServerConfig = new ServerConfig(null);
             string installPath = ServerPath.GetServersServerFiles(newServerConfig.ServerID);
 
@@ -1922,7 +2242,8 @@ namespace WindowsGSM
 
                 if (Installer != null && Installer.ExitCode != 0)
                 {
-                    textblock_InstallProgress.Text = "Fail to install [ERROR] Exit code: " + Installer.ExitCode;
+                    operationError = "Exit code: " + Installer.ExitCode;
+                    textblock_InstallProgress.Text = "Fail to install [ERROR] " + operationError;
                 }
                 else
                 {
@@ -1932,7 +2253,24 @@ namespace WindowsGSM
                     textblock_InstallProgress.Text = "Fail to install [ERROR] Validation failed. See Install Log.";
                     AppendInstallLogLine($"Install validation failed: {installError}");
                     WriteInstallFailureReport(newServerConfig, servergame, servername, steamBranch, installError, Installer?.ExitCode);
+                    operationError = installError;
                 }
+            }
+            }
+            catch (Exception ex)
+            {
+                operationError = ex.Message;
+                Log("System", $"[ERROR] Install failed: {ex.Message}");
+                textbox_InstallServerName.IsEnabled = true;
+                comboBox_InstallGameServer.IsEnabled = true;
+                stackPanel_InstallSteamBranch.IsEnabled = true;
+                progressbar_InstallProgress.IsIndeterminate = false;
+                textblock_InstallProgress.Text = "Fail to install [ERROR] " + ex.Message;
+                button_Install.IsEnabled = true;
+            }
+            finally
+            {
+                operation.Complete(operationError);
             }
         }
 
@@ -2255,12 +2593,14 @@ namespace WindowsGSM
             var server = (ServerTable)ServerGrid.SelectedItem;
             if (server == null) { return; }
 
+            if (IsServerOperationRunning(server.ID) || IsAnyOperationRunning()) { return; }
+
             if (GetServerMetadata(server.ID).ServerStatus != ServerStatus.Stopped) { return; }
 
             MessageBoxResult result = MessageBox.Show("Do you want to delete this server?\n(There is no comeback)", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result != MessageBoxResult.Yes) { return; }
 
-            await GameServer_Delete(server);
+            await RunServerOperation(server, ServerOperationKind.Delete, () => GameServer_Delete(server));
         }
 
         private async void Button_DiscordEdit_Click(object sender, RoutedEventArgs e)
@@ -2370,7 +2710,11 @@ namespace WindowsGSM
             // Reload WindowsGSM.cfg on start
             SaveServerConfigToServerMetadata(server.ID, new ServerConfig(server.ID));
 
-            await GameServer_Start(server);
+            await RunServerOperation(server, ServerOperationKind.Start, async () =>
+            {
+                await GameServer_Start(server);
+                return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+            });
         }
 
         private async void Actions_Stop_Click(object sender, RoutedEventArgs e)
@@ -2378,7 +2722,11 @@ namespace WindowsGSM
             var server = (ServerTable)ServerGrid.SelectedItem;
             if (server == null) { return; }
 
-            await GameServer_Stop(server);
+            await RunServerOperation(server, ServerOperationKind.Stop, async () =>
+            {
+                await GameServer_Stop(server);
+                return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
+            });
         }
 
         private async void Actions_Restart_Click(object sender, RoutedEventArgs e)
@@ -2386,7 +2734,11 @@ namespace WindowsGSM
             var server = (ServerTable)ServerGrid.SelectedItem;
             if (server == null) { return; }
 
-            await GameServer_Restart(server);
+            await RunServerOperation(server, ServerOperationKind.Restart, async () =>
+            {
+                await GameServer_Restart(server);
+                return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+            });
         }
 
         private async void Actions_Kill_Click(object sender, RoutedEventArgs e)
@@ -2394,6 +2746,10 @@ namespace WindowsGSM
             var server = (ServerTable)ServerGrid.SelectedItem;
             if (server == null) { return; }
 
+            if (!TryBeginServerOperation(server, ServerOperationKind.ForceStop, out ServerOperationScope operation)) { return; }
+            string operationError = null;
+            try
+            {
             switch (GetServerMetadata(server.ID).ServerStatus)
             {
                 case ServerStatus.Restarting:
@@ -2415,6 +2771,16 @@ namespace WindowsGSM
                     }
 
                     break;
+            }
+            }
+            catch (Exception ex)
+            {
+                operationError = ex.Message;
+                Log(server.ID, $"[ERROR] Force stop failed: {ex.Message}");
+            }
+            finally
+            {
+                operation.Complete(operationError);
             }
         }
 
@@ -2446,7 +2812,11 @@ namespace WindowsGSM
             {
                 if (GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped)
                 {
-                    await GameServer_Start(server);
+                    await RunServerOperation(server, ServerOperationKind.Start, async () =>
+                    {
+                        await GameServer_Start(server);
+                        return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+                    });
                 }
             }
         }
@@ -2457,7 +2827,11 @@ namespace WindowsGSM
             {
                 if (GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped && GetServerMetadata(server.ID).AutoStart)
                 {
-                    await GameServer_Start(server);
+                    await RunServerOperation(server, ServerOperationKind.Start, async () =>
+                    {
+                        await GameServer_Start(server);
+                        return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+                    });
                 }
             }
         }
@@ -2468,7 +2842,11 @@ namespace WindowsGSM
             {
                 if (GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started)
                 {
-                    await GameServer_Stop(server);
+                    await RunServerOperation(server, ServerOperationKind.Stop, async () =>
+                    {
+                        await GameServer_Stop(server);
+                        return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
+                    });
                 }
             }
         }
@@ -2479,7 +2857,11 @@ namespace WindowsGSM
             {
                 if (GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started)
                 {
-                    await GameServer_Restart(server);
+                    await RunServerOperation(server, ServerOperationKind.Restart, async () =>
+                    {
+                        await GameServer_Restart(server);
+                        return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+                    });
                 }
             }
         }
@@ -2494,7 +2876,7 @@ namespace WindowsGSM
             MessageBoxResult result = System.Windows.MessageBox.Show("Do you want to update this server?", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result != MessageBoxResult.Yes) { return; }
 
-            await GameServer_Update(server);
+            await RunServerOperation(server, ServerOperationKind.Update, () => GameServer_Update(server));
         }
 
         private async void Actions_UpdateValidate_Click(object sender, RoutedEventArgs e)
@@ -2507,7 +2889,7 @@ namespace WindowsGSM
             MessageBoxResult result = System.Windows.MessageBox.Show("Do you want to validate this server?", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result != MessageBoxResult.Yes) { return; }
 
-            await GameServer_Update(server, notes: " | Validate", validate: true);
+            await RunServerOperation(server, ServerOperationKind.Update, () => GameServer_Update(server, notes: " | Validate", validate: true));
         }
 
         private async void Actions_Backup_Click(object sender, RoutedEventArgs e)
@@ -2520,7 +2902,7 @@ namespace WindowsGSM
             MessageBoxResult result = System.Windows.MessageBox.Show("Do you want to backup on this server?", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result != MessageBoxResult.Yes) { return; }
 
-            await GameServer_Backup(server);
+            await RunServerOperation(server, ServerOperationKind.Backup, () => GameServer_Backup(server));
         }
 
         private async void Actions_RestoreBackup_Click(object sender, RoutedEventArgs e)
@@ -2560,7 +2942,7 @@ namespace WindowsGSM
             if (listbox_RestoreBackup.SelectedIndex >= 0)
             {
                 MahAppFlyout_RestoreBackup.IsOpen = false;
-                await GameServer_RestoreBackup(server, listbox_RestoreBackup.SelectedItem.ToString());
+                await RunServerOperation(server, ServerOperationKind.Restore, () => GameServer_RestoreBackup(server, listbox_RestoreBackup.SelectedItem.ToString()));
             }
         }
 
@@ -2568,6 +2950,7 @@ namespace WindowsGSM
         {
             var server = (ServerTable)ServerGrid.SelectedItem;
             if (server == null) { return; }
+            if (IsServerOperationRunning(server.ID) || IsAnyOperationRunning()) { return; }
 
             ListBox_ManageAddons_Refresh();
             ToggleMahappFlyout(MahAppFlyout_ManageAddons);
@@ -2580,7 +2963,11 @@ namespace WindowsGSM
             {
                 var server = (ServerTable)ServerGrid.SelectedItem;
                 if (server == null) { return; }
+                if (!TryBeginServerOperation(server, ServerOperationKind.Addon, out ServerOperationScope operation)) { return; }
 
+                string operationError = null;
+                try
+                {
                 string item = listBox_ManageAddonsLeft.SelectedItem.ToString();
                 listBox_ManageAddonsLeft.Items.Remove(listBox_ManageAddonsLeft.Items[listBox_ManageAddonsLeft.SelectedIndex]);
                 listBox_ManageAddonsRight.Items.Add(item);
@@ -2596,6 +2983,16 @@ namespace WindowsGSM
                         listBox_ManageAddonsRight.SelectedItem = selected;
                     }
                 }
+                }
+                catch (Exception ex)
+                {
+                    operationError = ex.Message;
+                    Log(server.ID, $"[ERROR] Addon action failed: {ex.Message}");
+                }
+                finally
+                {
+                    operation.Complete(operationError);
+                }
             }
         }
 
@@ -2605,7 +3002,11 @@ namespace WindowsGSM
             {
                 var server = (ServerTable)ServerGrid.SelectedItem;
                 if (server == null) { return; }
+                if (!TryBeginServerOperation(server, ServerOperationKind.Addon, out ServerOperationScope operation)) { return; }
 
+                string operationError = null;
+                try
+                {
                 string item = listBox_ManageAddonsRight.SelectedItem.ToString();
                 listBox_ManageAddonsRight.Items.Remove(listBox_ManageAddonsRight.Items[listBox_ManageAddonsRight.SelectedIndex]);
                 listBox_ManageAddonsLeft.Items.Add(item);
@@ -2620,6 +3021,16 @@ namespace WindowsGSM
                     {
                         listBox_ManageAddonsLeft.SelectedItem = selected;
                     }
+                }
+                }
+                catch (Exception ex)
+                {
+                    operationError = ex.Message;
+                    Log(server.ID, $"[ERROR] Addon action failed: {ex.Message}");
+                }
+                finally
+                {
+                    operation.Complete(operationError);
                 }
             }
         }
@@ -5099,10 +5510,19 @@ namespace WindowsGSM
             var result = await this.ShowMessageAsync("Tools - Install AMX Mod X & MetaMod-P", $"Are you sure to install? (ID: {server.ID})", MessageDialogStyle.AffirmativeAndNegative);
             if (result == MessageDialogResult.Affirmative)
             {
-                ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Please wait...");
-                controller.SetIndeterminate();
-                bool installed = await InstallAddons.AMXModXAndMetaModP(server);
-                await controller.CloseAsync();
+                bool installed = await RunServerOperation(server, ServerOperationKind.Addon, async () =>
+                {
+                    ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Please wait...");
+                    controller.SetIndeterminate();
+                    try
+                    {
+                        return await InstallAddons.AMXModXAndMetaModP(server);
+                    }
+                    finally
+                    {
+                        await controller.CloseAsync();
+                    }
+                });
 
                 string message = installed ? $"Installed successfully" : $"Fail to install";
                 await this.ShowMessageAsync("Tools - Install AMX Mod X & MetaMod-P", $"{message} (ID: {server.ID})");
@@ -5130,10 +5550,19 @@ namespace WindowsGSM
             var result = await this.ShowMessageAsync("Tools - Install SourceMod & MetaMod", $"Are you sure to install? (ID: {server.ID})", MessageDialogStyle.AffirmativeAndNegative);
             if (result == MessageDialogResult.Affirmative)
             {
-                var controller = await this.ShowProgressAsync("Installing...", "Please wait...");
-                controller.SetIndeterminate();
-                bool installed = await InstallAddons.SourceModAndMetaMod(server);
-                await controller.CloseAsync();
+                bool installed = await RunServerOperation(server, ServerOperationKind.Addon, async () =>
+                {
+                    var controller = await this.ShowProgressAsync("Installing...", "Please wait...");
+                    controller.SetIndeterminate();
+                    try
+                    {
+                        return await InstallAddons.SourceModAndMetaMod(server);
+                    }
+                    finally
+                    {
+                        await controller.CloseAsync();
+                    }
+                });
 
                 var message = installed ? $"Installed successfully" : $"Fail to install";
                 await this.ShowMessageAsync("Tools - Install SourceMod & MetaMod", $"{message} (ID: {server.ID})");
@@ -5161,10 +5590,19 @@ namespace WindowsGSM
             var result = await this.ShowMessageAsync("Tools - Install DayZSAL Mod Server", $"Are you sure to install? (ID: {server.ID})", MessageDialogStyle.AffirmativeAndNegative);
             if (result == MessageDialogResult.Affirmative)
             {
-                ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Please wait...");
-                controller.SetIndeterminate();
-                bool installed = await InstallAddons.DayZSALModServer(server);
-                await controller.CloseAsync();
+                bool installed = await RunServerOperation(server, ServerOperationKind.Addon, async () =>
+                {
+                    ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Please wait...");
+                    controller.SetIndeterminate();
+                    try
+                    {
+                        return await InstallAddons.DayZSALModServer(server);
+                    }
+                    finally
+                    {
+                        await controller.CloseAsync();
+                    }
+                });
 
                 string message = installed ? $"Installed successfully" : $"Fail to install";
                 await this.ShowMessageAsync("Tools - Install DayZSAL Mod Server", $"{message} (ID: {server.ID})");
@@ -5194,10 +5632,19 @@ namespace WindowsGSM
             var result = await this.ShowMessageAsync(messageTitle, $"Are you sure to install? (ID: {server.ID})", MessageDialogStyle.AffirmativeAndNegative);
             if (result == MessageDialogResult.Affirmative)
             {
-                ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Please wait...");
-                controller.SetIndeterminate();
-                bool installed = await InstallAddons.OxideMod(server);
-                await controller.CloseAsync();
+                bool installed = await RunServerOperation(server, ServerOperationKind.Addon, async () =>
+                {
+                    ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Please wait...");
+                    controller.SetIndeterminate();
+                    try
+                    {
+                        return await InstallAddons.OxideMod(server);
+                    }
+                    finally
+                    {
+                        await controller.CloseAsync();
+                    }
+                });
 
                 string message = installed ? $"Installed successfully" : $"Fail to install";
                 await this.ShowMessageAsync(messageTitle, $"{message} (ID: {server.ID})");
@@ -5235,10 +5682,19 @@ namespace WindowsGSM
                 }
             }
 
-            ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Downloading Windrose+ and running install.ps1...");
-            controller.SetIndeterminate();
-            bool installed = await InstallAddons.WindrosePlus(server);
-            await controller.CloseAsync();
+            bool installed = await RunServerOperation(server, ServerOperationKind.Addon, async () =>
+            {
+                ProgressDialogController controller = await this.ShowProgressAsync("Installing...", "Downloading Windrose+ and running install.ps1...");
+                controller.SetIndeterminate();
+                try
+                {
+                    return await InstallAddons.WindrosePlus(server);
+                }
+                finally
+                {
+                    await controller.CloseAsync();
+                }
+            });
 
             string message = installed
                 ? "Installed successfully. Windrose+ will be prepared automatically before the next Windrose server start."
@@ -6075,7 +6531,11 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive START action | {adminName} ({adminID})");
-            await GameServer_Start(server);
+            await RunServerOperation(server, ServerOperationKind.Start, async () =>
+            {
+                await GameServer_Start(server);
+                return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+            });
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
         }
 
@@ -6085,7 +6545,11 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive STOP action | {adminName} ({adminID})");
-            await GameServer_Stop(server);
+            await RunServerOperation(server, ServerOperationKind.Stop, async () =>
+            {
+                await GameServer_Stop(server);
+                return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
+            });
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
         }
 
@@ -6095,7 +6559,11 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive RESTART action | {adminName} ({adminID})");
-            await GameServer_Restart(server);
+            await RunServerOperation(server, ServerOperationKind.Restart, async () =>
+            {
+                await GameServer_Restart(server);
+                return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
+            });
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
         }
 
@@ -6114,7 +6582,7 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive BACKUP action | {adminName} ({adminID})");
-            await GameServer_Backup(server);
+            await RunServerOperation(server, ServerOperationKind.Backup, () => GameServer_Backup(server));
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
         }
 
@@ -6124,7 +6592,7 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive UPDATE action | {adminName} ({adminID})");
-            await GameServer_Update(server);
+            await RunServerOperation(server, ServerOperationKind.Update, () => GameServer_Update(server));
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
         }
 

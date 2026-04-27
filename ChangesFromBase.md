@@ -1,8 +1,14 @@
 # WindowsGSM Changes / Release Notes
 
-From `v1.26.1` onward, this file follows normal release-note style entries: newest release first, with changes listed relative to the previous release.
+From `v1.26.3` onward, this file follows normal release-note style entries: newest release first, with changes listed relative to the previous release.
 
 The older **Historical Changes Since Original 1.26.0** section below is kept as a one-time comparison against the original/base `1.26.0` work.
+
+## v1.26.3
+
+- Allowed force-stop operations to interrupt an active operation on the selected server, preserving the emergency recovery path for stuck start/stop/restart transitions.
+- Java installer timeout now stops the installer process before returning failure, preventing overlapping installer instances on retry.
+- Bumped application, assembly, and file versions to `1.26.3`.
 
 ## v1.26.2
 

@@ -292,17 +292,26 @@ namespace WindowsGSM
                     return false;
                 }
 
+                if (_serverOperations.TryGetValue(server.ID, out ServerOperationState running))
+                {
+                    if (kind == ServerOperationKind.ForceStop)
+                    {
+                        _serverOperations.Remove(server.ID);
+                        _lastOperationError = $"{running.Description}: interrupted by force stop";
+                        Log(server.ID, $"[NOTICE] Interrupting {running.Description} with force stop.");
+                    }
+                    else
+                    {
+                        Log(server.ID, $"[NOTICE] Cannot run {GetOperationDescription(kind)} while {running.Description} is running.");
+                        RefreshOperationUi();
+                        return false;
+                    }
+                }
+
                 if (_serverOperations.Count > 0)
                 {
                     ServerOperationState anyRunning = _serverOperations.Values.OrderBy(x => x.StartedAt).First();
                     Log(server.ID, $"[NOTICE] Cannot run {GetOperationDescription(kind)} while {anyRunning.Description} is running on {anyRunning.ServerName ?? anyRunning.ServerId}.");
-                    RefreshOperationUi();
-                    return false;
-                }
-
-                if (_serverOperations.TryGetValue(server.ID, out ServerOperationState running))
-                {
-                    Log(server.ID, $"[NOTICE] Cannot run {GetOperationDescription(kind)} while {running.Description} is running.");
                     RefreshOperationUi();
                     return false;
                 }
@@ -443,6 +452,22 @@ namespace WindowsGSM
             lock (_operationLock)
             {
                 return _globalOperation != null || _serverOperations.Count > 0;
+            }
+        }
+
+        private bool IsGlobalOperationRunning()
+        {
+            lock (_operationLock)
+            {
+                return _globalOperation != null;
+            }
+        }
+
+        private bool IsOtherServerOperationRunning(string serverId)
+        {
+            lock (_operationLock)
+            {
+                return _serverOperations.Keys.Any(id => !string.Equals(id, serverId, StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -1978,8 +2003,10 @@ namespace WindowsGSM
                 Console.WriteLine("Datagrid Changed");
 #endif
                 bool serverOperationRunning = IsServerOperationRunning(row.ID);
-                bool anyOperationRunning = IsAnyOperationRunning();
-                if (!serverOperationRunning && !anyOperationRunning && GetServerMetadata(row.ID).ServerStatus == ServerStatus.Stopped)
+                bool globalOperationRunning = IsGlobalOperationRunning();
+                bool otherServerOperationRunning = IsOtherServerOperationRunning(row.ID);
+                bool blocksNormalActions = serverOperationRunning || globalOperationRunning || otherServerOperationRunning;
+                if (!blocksNormalActions && GetServerMetadata(row.ID).ServerStatus == ServerStatus.Stopped)
                 {
                     button_Start.IsEnabled = true;
                     button_Stop.IsEnabled = false;
@@ -1991,7 +2018,7 @@ namespace WindowsGSM
                     textbox_servercommand.IsEnabled = false;
                     button_servercommand.IsEnabled = false;
                 }
-                else if (!serverOperationRunning && !anyOperationRunning && GetServerMetadata(row.ID).ServerStatus == ServerStatus.Started)
+                else if (!blocksNormalActions && GetServerMetadata(row.ID).ServerStatus == ServerStatus.Started)
                 {
                     button_Start.IsEnabled = false;
                     button_Stop.IsEnabled = true;
@@ -2024,7 +2051,9 @@ namespace WindowsGSM
                     button_servercommand.IsEnabled = false;
                 }
 
-                switch (serverOperationRunning || anyOperationRunning ? ServerStatus.Stopped : GetServerMetadata(row.ID).ServerStatus)
+                ServerStatus statusForKill = GetServerMetadata(row.ID).ServerStatus;
+                bool canForceStopOperation = serverOperationRunning && !globalOperationRunning && !otherServerOperationRunning;
+                switch (canForceStopOperation ? ServerStatus.Started : (blocksNormalActions ? ServerStatus.Stopped : statusForKill))
                 {
                     case ServerStatus.Restarting:
                     case ServerStatus.Restarted:
@@ -2036,7 +2065,7 @@ namespace WindowsGSM
                     default: button_Kill.IsEnabled = false; break;
                 }
 
-                button_ManageAddons.IsEnabled = !serverOperationRunning && !anyOperationRunning && ServerAddon.IsGameSupportManageAddons(row.Game);
+                button_ManageAddons.IsEnabled = !blocksNormalActions && ServerAddon.IsGameSupportManageAddons(row.Game);
                 if (GetServerMetadata(row.ID).ServerStatus == ServerStatus.Deleting || GetServerMetadata(row.ID).ServerStatus == ServerStatus.Restoring)
                 {
                     button_ManageAddons.IsEnabled = false;

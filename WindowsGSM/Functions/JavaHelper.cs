@@ -58,33 +58,37 @@ namespace WindowsGSM.Functions
                     EnableRaisingEvents = true
                 };
 
-                if (!p.Start())
+                using (p)
                 {
-                    result.error = $"Could not start Java installer '{JreInstallFileName}'.";
-                    result.installed = false;
-                    return result;
-                }
-
-                DateTime deadline = DateTime.UtcNow.Add(JreInstallTimeout);
-
-                // Wait until java.exe appears, the installer exits with a failure, or the timeout is reached.
-                while (FindJavaExecutableAbsolutePathInJavaRuntimeDirectory(JreAbsoluteInstallPath).Length == 0)
-                {
-                    if (p.HasExited && p.ExitCode != 0)
+                    if (!p.Start())
                     {
-                        result.error = $"Java installer exited with code {p.ExitCode}.";
+                        result.error = $"Could not start Java installer '{JreInstallFileName}'.";
                         result.installed = false;
                         return result;
                     }
 
-                    if (DateTime.UtcNow >= deadline)
-                    {
-                        result.error = $"Timed out after {JreInstallTimeout.TotalMinutes:0} minutes waiting for Java to install to '{JreAbsoluteInstallPath}'.";
-                        result.installed = false;
-                        return result;
-                    }
+                    DateTime deadline = DateTime.UtcNow.Add(JreInstallTimeout);
 
-                    await Task.Delay(500);
+                    // Wait until java.exe appears, the installer exits with a failure, or the timeout is reached.
+                    while (FindJavaExecutableAbsolutePathInJavaRuntimeDirectory(JreAbsoluteInstallPath).Length == 0)
+                    {
+                        if (p.HasExited && p.ExitCode != 0)
+                        {
+                            result.error = $"Java installer exited with code {p.ExitCode}.";
+                            result.installed = false;
+                            return result;
+                        }
+
+                        if (DateTime.UtcNow >= deadline)
+                        {
+                            TryStopProcess(p);
+                            result.error = $"Timed out after {JreInstallTimeout.TotalMinutes:0} minutes waiting for Java to install to '{JreAbsoluteInstallPath}'. Installer process was stopped.";
+                            result.installed = false;
+                            return result;
+                        }
+
+                        await Task.Delay(500);
+                    }
                 }
             }
             catch (Exception ex)
@@ -95,6 +99,22 @@ namespace WindowsGSM.Functions
             }
 
             return result;
+        }
+
+        private static void TryStopProcess(Process process)
+        {
+            try
+            {
+                if (process != null && !process.HasExited)
+                {
+                    process.Kill(true);
+                    process.WaitForExit(5000);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup after installer timeout.
+            }
         }
 
         public static bool IsJREInstalled()

@@ -39,6 +39,7 @@
                      <Label Content="Failed:" Margin="0,0,0,10" FontSize="14" FontWeight="SemiBold" Padding="5,5.5,0,5"></Label>
                      <Label x:Name="Label_PluginFailed" Content="0" Margin="0,0,10,10" FontSize="15" FontWeight="SemiBold" Foreground="Red"></Label>
                   </StackPanel>
+                  <Button x:Name="Button_SearchPlugins" Content="Search Plugins" Height="29" Width="130" HorizontalAlignment="Right" Click="SearchPlugins_Click" Margin="-20,-50,288,0"></Button>
                   <Button x:Name="Button_ImportPlugin" Content="Import Plugin" Height="29" Width="130" HorizontalAlignment="Right" Click="ImportPlugin_Click" Margin="-20,-50,150,0"></Button>
                   <Button x:Name="Button_RefreshPlugins" Content="Reload Plugins" Height="29" Width="130" HorizontalAlignment="Right" Margin="-20,-50,12,0" Click="RefreshPlugins_Click"></Button>
                </StackPanel>
@@ -82,6 +83,45 @@
 
                   </StackPanel>
                </ScrollViewer>
+            </DockPanel>
+         </mah:Flyout>
+         <mah:Flyout x:Name="MahAppFlyout_PluginSearch" Header="Search Plugins" Position="Left" Width="600" Theme="Dark" IsModal="True">
+            <DockPanel Margin="15,0,15,15">
+               <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                  <Button x:Name="Button_PluginSearchRun" Content="Search" DockPanel.Dock="Right" Width="90" Height="28" Margin="8,0,0,0" Click="Button_PluginSearchRun_Click"/>
+                  <TextBox x:Name="TextBox_PluginSearch" Height="28" VerticalContentAlignment="Center" KeyDown="TextBox_PluginSearch_KeyDown"/>
+               </DockPanel>
+               <mah:MetroProgressBar x:Name="ProgressRing_PluginSearch" IsIndeterminate="True" Foreground="{DynamicResource MahApps.Brushes.AccentBase}" DockPanel.Dock="Top" Margin="0,0,0,10" Visibility="Collapsed"/>
+               <TextBlock x:Name="TextBlock_PluginSearchStatus" DockPanel.Dock="Top" Text="Search GitHub repository names for WindowsGSM plugins." TextWrapping="Wrap" Margin="0,0,0,10"/>
+               <Border DockPanel.Dock="Top" BorderBrush="DarkOrange" BorderThickness="1" CornerRadius="4" Padding="8" Margin="0,0,0,10" Background="#33FF8C00">
+                  <TextBlock Text="Install plugins at your own risk. These are GitHub search results, not verified WindowsGSM releases. Some plugins may be unfinished, outdated, unsafe, or incompatible with this version." TextWrapping="Wrap"/>
+               </Border>
+               <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <StackPanel x:Name="StackPanel_PluginSearchResults"/>
+               </ScrollViewer>
+            </DockPanel>
+         </mah:Flyout>
+         <mah:Flyout x:Name="MahAppFlyout_PluginDetails" Header="Plugin Repository" Position="Right" Width="600" Theme="Dark" IsModal="True">
+            <DockPanel Margin="15,0,15,15">
+               <StackPanel DockPanel.Dock="Top">
+                  <TextBlock x:Name="TextBlock_PluginDetailsName" FontSize="20" FontWeight="Bold" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                  <TextBlock x:Name="TextBlock_PluginDetailsOwner" FontSize="13" Foreground="LightGray" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                  <TextBlock x:Name="TextBlock_PluginDetailsDescription" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                  <UniformGrid Columns="2" Margin="0,0,0,14">
+                     <TextBlock x:Name="TextBlock_PluginDetailsStars" Margin="0,0,10,8"/>
+                     <TextBlock x:Name="TextBlock_PluginDetailsForks" Margin="0,0,10,8"/>
+                     <TextBlock x:Name="TextBlock_PluginDetailsIssues" Margin="0,0,10,8"/>
+                     <TextBlock x:Name="TextBlock_PluginDetailsUpdated" Margin="0,0,10,8"/>
+                     <TextBlock x:Name="TextBlock_PluginDetailsLanguage" Margin="0,0,10,8"/>
+                     <TextBlock x:Name="TextBlock_PluginDetailsLicense" Margin="0,0,10,8"/>
+                  </UniformGrid>
+                  <TextBlock x:Name="TextBlock_PluginDetailsUrl" TextWrapping="Wrap" Foreground="DeepSkyBlue" Margin="0,0,0,14"/>
+                  <StackPanel Orientation="Horizontal">
+                     <Button x:Name="Button_PluginDetailsInstall" Content="Install Plugin" Width="130" Height="29" Click="Button_PluginDetailsInstall_Click"/>
+                     <Button x:Name="Button_PluginDetailsOpen" Content="Open GitHub" Width="130" Height="29" Margin="8,0,0,0" Click="Button_PluginDetailsOpen_Click"/>
+                     <Button x:Name="Button_PluginDetailsClose" Content="Close" Width="90" Height="29" Margin="8,0,0,0" Click="Button_PluginDetailsClose_Click"/>
+                  </StackPanel>
+               </StackPanel>
             </DockPanel>
          </mah:Flyout>
          <mah:Flyout x:Name="MahAppFlyout_Settings" Header="WindowsGSM Settings" Position="Right" Width="300" Theme="Dark" IsModal="True">

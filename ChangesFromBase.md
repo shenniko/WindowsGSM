@@ -2,7 +2,16 @@
 
 From `v1.26.3` onward, this file follows normal release-note style entries: newest release first, with changes listed relative to the previous release.
 
-The older **Historical Changes Since Original 1.26.0** section below is kept as a one-time comparison against the original/base `1.26.0` work.
+## v1.26.4
+
+- Added a plugin search button to the Plugins flyout.
+- Added a left-side plugin search flyout that searches GitHub repository names using `WindowsGSM.<search term> in:name`.
+- Added searchable plugin result cards with repository name, description, owner, language, stars, forks, and update date.
+- Added a plugin repository details flyout with repo metadata and an `Open GitHub` action.
+- Added an `Install Plugin` action to plugin repository details.
+- Plugin install downloads the selected GitHub repository archive, finds the WindowsGSM plugin `.cs` folder, extracts it into the local `plugins` folder, and reloads plugins/server definitions.
+- Improved plugin search result card layout so repository metadata no longer collapses into a narrow column.
+- Bumped application, assembly, and file versions to `1.26.4`.
 
 ## v1.26.3
 
@@ -28,42 +37,7 @@ The older **Historical Changes Since Original 1.26.0** section below is kept as 
 - Added Java installer timeout handling and clearer Java install failure messages.
 - Bumped application, assembly, and file versions to `1.26.1`.
 
-## Historical Changes Since Original 1.26.0
-
-- Updated to [Dotnet8](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-desktop-8.0.16-windows-x64-installer)
-- Extended Crontab Config
-  - Crontabs can now also Execute Windows commands and send Server Console Commands by adding *.csv files to the server config folder (servers\\%ServerID%\\configs\\Crontab) (or click Browse => Server Configs in WindowsGSM while the server is marked, then create the folder Crontab if not existing.)
-  - HowTo and Examples: https://github.com/Raziel7893/WindowsGSM/blob/master/Crontab.md
-- Extended Backup Config
-  - BackupConfig now supports individual/multiple save locations via config
-  - File Will be Created After starting a Server the First time with backup enabled
-  - It can be found by clicking Browse => Server Configs => BackupConfig.cfg
-  - Backup archives are now written directly from the source paths into the zip file instead of copying everything to a temporary folder first
-  - Backup path and save path entries can now follow the current WindowsGSM root when the app folder is copied or moved, and corrected paths are written back to BackupConfig.cfg
-  - Intentional absolute backup paths outside the WindowsGSM folder are preserved and are not rebased into the app folder.
-  - Hint: Do not modify WindowsGSM.cfg manually, everything is changable via the Programm itself, the Syntax of that file is quite easy to destry and your server will disappear from wgsm if you mess it up 
-- Send Join Codes via Webhook
-  - Will send the joincode text aslong as the autostart or autorestart alert is activated in the webhook settings
-  - EMBEDD CONSOLE NEEDS TO BE ENABLED 
-- Public IP change Webhook
-  - Activate in the Webhook settings
-  - Will check your public IP every 2 min via https://ipinfo.io/ip and send out a Webhook if it changed
-  - Will also change other Webhooks to include your actual public IP instead of your local one set in WindowsGSM as ServerIP
-- DiscordBot SendR
-  - Send a Console Command and try to gather the response,  Needs a working Embedded Console
-- Customize Discord BOT
-  - Add posibility to change Bot name and manually way to change the donation based avatar from wgsm to a custom one.
-  - Just put an avatar.png inside configs\discordbot\avatar.png
-  - Also added a switch to just stop wgsm to change the profile of the Webhook user
-
-----
-
-## Added by Shenniko
-
-Compared against `Raziel7893/WindowsGSM` `master` on 2026-04-22.
-==============================================================================
-
-## Changes
+## 1.26.0
 - Updated WindowsGSM from .NET 8 to .NET 10
   - Changed the main WindowsGSM target framework to `net10.0-windows`.
   - Changed the plugin development project to `net10.0-windows`.
@@ -216,3 +190,30 @@ Compared against `Raziel7893/WindowsGSM` `master` on 2026-04-22.
   - Added ignore rules for `packages/`, `*.csproj.user`, and `*.Backup.tmp`.
   - Kept required packages for Discord, Roslyn compilation, MahApps, RCON, cron, zip, and management support.
   - Bumped assembly version/file version to `1.26.0`.
+
+## Historical Changes by Raziel7893
+
+- Updated to [Dotnet8](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-desktop-8.0.16-windows-x64-installer)
+- Extended Crontab Config
+  - Crontabs can now also Execute Windows commands and send Server Console Commands by adding *.csv files to the server config folder (servers\\%ServerID%\\configs\\Crontab) (or click Browse => Server Configs in WindowsGSM while the server is marked, then create the folder Crontab if not existing.)
+  - HowTo and Examples: https://github.com/Raziel7893/WindowsGSM/blob/master/Crontab.md
+- Extended Backup Config
+  - BackupConfig now supports individual/multiple save locations via config
+  - File Will be Created After starting a Server the First time with backup enabled
+  - It can be found by clicking Browse => Server Configs => BackupConfig.cfg
+  - Hint: Do not modify WindowsGSM.cfg manually, everything is changable via the Programm itself, the Syntax of that file is quite easy to destry and your server will disappear from wgsm if you mess it up 
+- Send Join Codes via Webhook
+  - Will send the joincode text aslong as the autostart or autorestart alert is activated in the webhook settings
+  - EMBEDD CONSOLE NEEDS TO BE ENABLED 
+- Public IP change Webhook
+  - Activate in the Webhook settings
+  - Will check your public IP every 2 min via https://ipinfo.io/ip and send out a Webhook if it changed
+  - Will also change other Webhooks to include your actual public IP instead of your local one set in WindowsGSM as ServerIP
+- DiscordBot SendR
+  - Send a Console Command and try to gather the response,  Needs a working Embedded Console
+- Customize Discord BOT
+  - Add posibility to change Bot name and manually way to change the donation based avatar from wgsm to a custom one.
+  - Just put an avatar.png inside configs\discordbot\avatar.png
+  - Also added a switch to just stop wgsm to change the profile of the Webhook user
+
+----

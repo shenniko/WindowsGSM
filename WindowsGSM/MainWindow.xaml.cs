@@ -176,6 +176,23 @@ namespace WindowsGSM
             public string Message { get; set; }
         }
 
+        private sealed class PluginRepositorySearchResult
+        {
+            public string Name { get; set; }
+            public string FullName { get; set; }
+            public string Owner { get; set; }
+            public string Description { get; set; }
+            public string Url { get; set; }
+            public string Language { get; set; }
+            public string License { get; set; }
+            public string DefaultBranch { get; set; }
+            public string ZipUrl { get; set; }
+            public int Stars { get; set; }
+            public int Forks { get; set; }
+            public int OpenIssues { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+        }
+
         private enum ServerOperationKind
         {
             Install,
@@ -252,6 +269,7 @@ namespace WindowsGSM
         private ServerOperationState _globalOperation;
         private string _lastOperationError;
         private DateTime _lastOperationUiRefresh = DateTime.MinValue;
+        private PluginRepositorySearchResult _selectedPluginSearchResult;
         private readonly Dictionary<string, List<ServerResourceSample>> _serverResourceSamples = new Dictionary<string, List<ServerResourceSample>>();
         private readonly Dictionary<string, ProcessUsageSample> _lastProcessUsageSamples = new Dictionary<string, ProcessUsageSample>();
         private readonly Brush[] _dashboardResourceBrushes =
@@ -1037,6 +1055,8 @@ namespace WindowsGSM
 
         public async void LoadPlugins(bool shouldAwait = true)
         {
+            StackPanel_PluginList.Children.Clear();
+
             var pm = new PluginManagement();
             PluginsList = await pm.LoadPlugins(shouldAwait);
 
@@ -1170,6 +1190,351 @@ namespace WindowsGSM
             {
                 MessageBox.Show($"Failed to open link: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private void SearchPlugins_Click(object sender, RoutedEventArgs e)
+        {
+            MahAppFlyout_PluginSearch.IsOpen = true;
+            TextBox_PluginSearch.Focus();
+        }
+
+        private async void Button_PluginSearchRun_Click(object sender, RoutedEventArgs e)
+        {
+            await SearchPluginRepositories();
+        }
+
+        private async void TextBox_PluginSearch_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                e.Handled = true;
+                await SearchPluginRepositories();
+            }
+        }
+
+        private async Task SearchPluginRepositories()
+        {
+            string searchTerm = TextBox_PluginSearch.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(searchTerm))
+            {
+                TextBlock_PluginSearchStatus.Text = "Enter a plugin name or game, for example Windrose.";
+                return;
+            }
+
+            Button_PluginSearchRun.IsEnabled = false;
+            ProgressRing_PluginSearch.Visibility = Visibility.Visible;
+            StackPanel_PluginSearchResults.Children.Clear();
+            TextBlock_PluginSearchStatus.Text = $"Searching GitHub for WindowsGSM.{searchTerm} plugin repositories...";
+
+            try
+            {
+                string query = $"WindowsGSM.{searchTerm} in:name";
+                string url = $"https://api.github.com/search/repositories?q={Uri.EscapeDataString(query)}&sort=stars&order=desc&per_page=25";
+                string json = await WindowsGSM.Functions.Http.DownloadStringAsync(url, true);
+                var root = JObject.Parse(json);
+                var items = root["items"] as JArray;
+                var results = new List<PluginRepositorySearchResult>();
+
+                if (items != null)
+                {
+                    foreach (JToken item in items)
+                    {
+                        string name = item["name"]?.ToString() ?? string.Empty;
+                        string fullName = item["full_name"]?.ToString() ?? string.Empty;
+                        if (!IsWindowsGsmPluginNameMatch(name, searchTerm) && !IsWindowsGsmPluginNameMatch(fullName, searchTerm))
+                        {
+                            continue;
+                        }
+
+                        results.Add(new PluginRepositorySearchResult
+                        {
+                            Name = name,
+                            FullName = fullName,
+                            Owner = item["owner"] is JObject owner ? owner["login"]?.ToString() ?? string.Empty : string.Empty,
+                            Description = item["description"]?.ToString() ?? string.Empty,
+                            Url = item["html_url"]?.ToString() ?? string.Empty,
+                            Language = item["language"]?.ToString() ?? string.Empty,
+                            License = item["license"] is JObject license ? license["spdx_id"]?.ToString() ?? string.Empty : string.Empty,
+                            DefaultBranch = item["default_branch"]?.ToString() ?? string.Empty,
+                            ZipUrl = item["zipball_url"]?.ToString() ?? string.Empty,
+                            Stars = item["stargazers_count"]?.Value<int>() ?? 0,
+                            Forks = item["forks_count"]?.Value<int>() ?? 0,
+                            OpenIssues = item["open_issues_count"]?.Value<int>() ?? 0,
+                            UpdatedAt = item["updated_at"]?.Value<DateTime?>()
+                        });
+                    }
+                }
+
+                RenderPluginSearchResults(results);
+                TextBlock_PluginSearchStatus.Text = results.Count == 0
+                    ? $"No WindowsGSM.{searchTerm} repositories found."
+                    : $"Found {results.Count} WindowsGSM.{searchTerm} repositories.";
+            }
+            catch (Exception ex)
+            {
+                TextBlock_PluginSearchStatus.Text = "Plugin search failed: " + ex.Message;
+            }
+            finally
+            {
+                Button_PluginSearchRun.IsEnabled = true;
+                ProgressRing_PluginSearch.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void RenderPluginSearchResults(List<PluginRepositorySearchResult> results)
+        {
+            StackPanel_PluginSearchResults.Children.Clear();
+
+            foreach (PluginRepositorySearchResult result in results)
+            {
+                var border = new Border
+                {
+                    BorderBrush = Brushes.DeepSkyBlue,
+                    Background = Brushes.SlateGray,
+                    BorderThickness = new Thickness(1.5),
+                    CornerRadius = new CornerRadius(5),
+                    Padding = new Thickness(8),
+                    Margin = new Thickness(0, 0, 0, 10),
+                    Cursor = System.Windows.Input.Cursors.Hand,
+                    Tag = result
+                };
+
+                var panel = new StackPanel { Orientation = Orientation.Vertical };
+                var header = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+                header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var name = new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(result.FullName) ? result.Name : result.FullName,
+                    FontSize = 15,
+                    FontWeight = FontWeights.Bold,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 0, 10, 0)
+                };
+                Grid.SetColumn(name, 0);
+                header.Children.Add(name);
+
+                var stats = new TextBlock
+                {
+                    Text = $"★ {result.Stars}   Forks {result.Forks}",
+                    Foreground = Brushes.White,
+                    FontSize = 12,
+                    TextAlignment = TextAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Top
+                };
+                Grid.SetColumn(stats, 1);
+                header.Children.Add(stats);
+
+                panel.Children.Add(header);
+
+                panel.Children.Add(new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(result.Description) ? "No description provided." : result.Description,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 0, 0, 6)
+                });
+
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"{result.Owner} • {FormatPluginSearchDetail(result.Language, "Unknown language")} • Updated {FormatDate(result.UpdatedAt)}",
+                    Foreground = Brushes.LightGray,
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap
+                });
+
+                border.Child = panel;
+                border.MouseLeftButtonUp += PluginSearchResult_Click;
+                StackPanel_PluginSearchResults.Children.Add(border);
+            }
+        }
+
+        private static bool IsWindowsGsmPluginNameMatch(string value, string searchTerm)
+        {
+            if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(searchTerm)) { return false; }
+
+            string normalizedValue = value.Trim();
+            int slashIndex = normalizedValue.LastIndexOf('/');
+            if (slashIndex >= 0)
+            {
+                normalizedValue = normalizedValue.Substring(slashIndex + 1);
+            }
+
+            return normalizedValue.StartsWith("WindowsGSM.", StringComparison.OrdinalIgnoreCase) &&
+                   normalizedValue.IndexOf(searchTerm.Trim(), StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void PluginSearchResult_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is Border border && border.Tag is PluginRepositorySearchResult result)
+            {
+                ShowPluginRepositoryDetails(result);
+            }
+        }
+
+        private void ShowPluginRepositoryDetails(PluginRepositorySearchResult result)
+        {
+            _selectedPluginSearchResult = result;
+            TextBlock_PluginDetailsName.Text = string.IsNullOrWhiteSpace(result.FullName) ? result.Name : result.FullName;
+            TextBlock_PluginDetailsOwner.Text = string.IsNullOrWhiteSpace(result.Owner) ? "Unknown owner" : $"Owner: {result.Owner}";
+            TextBlock_PluginDetailsDescription.Text = string.IsNullOrWhiteSpace(result.Description) ? "No description provided." : result.Description;
+            TextBlock_PluginDetailsStars.Text = $"Stars: {result.Stars}";
+            TextBlock_PluginDetailsForks.Text = $"Forks: {result.Forks}";
+            TextBlock_PluginDetailsIssues.Text = $"Open issues: {result.OpenIssues}";
+            TextBlock_PluginDetailsUpdated.Text = $"Updated: {FormatDate(result.UpdatedAt)}";
+            TextBlock_PluginDetailsLanguage.Text = $"Language: {FormatPluginSearchDetail(result.Language, "Unknown")}";
+            TextBlock_PluginDetailsLicense.Text = $"License: {FormatPluginSearchDetail(result.License, "Not specified")}";
+            TextBlock_PluginDetailsUrl.Text = result.Url;
+            Button_PluginDetailsOpen.IsEnabled = !string.IsNullOrWhiteSpace(result.Url);
+            Button_PluginDetailsInstall.IsEnabled = !string.IsNullOrWhiteSpace(result.ZipUrl) || !string.IsNullOrWhiteSpace(result.FullName);
+            MahAppFlyout_PluginDetails.IsOpen = true;
+        }
+
+        private async void Button_PluginDetailsInstall_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectedPluginSearchResult == null) { return; }
+
+            Button_PluginDetailsInstall.IsEnabled = false;
+            try
+            {
+                string installedPlugin = await InstallPluginRepository(_selectedPluginSearchResult);
+                TextBlock_PluginSearchStatus.Text = $"Installed {installedPlugin}. Reloading plugins...";
+                Log("Plugins", $"Installed plugin from GitHub: {_selectedPluginSearchResult.FullName}");
+                LoadPlugins();
+                LoadServerTable();
+                TextBlock_PluginSearchStatus.Text = $"Installed {installedPlugin}.";
+                MahAppFlyout_PluginDetails.IsOpen = false;
+            }
+            catch (Exception ex)
+            {
+                TextBlock_PluginSearchStatus.Text = "Plugin install failed: " + ex.Message;
+                MessageBox.Show($"Plugin install failed: {ex.Message}", "Install Plugin", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                Button_PluginDetailsInstall.IsEnabled = true;
+            }
+        }
+
+        private async Task<string> InstallPluginRepository(PluginRepositorySearchResult result)
+        {
+            string safeName = string.Join("_", (result.Name ?? "plugin").Split(Path.GetInvalidFileNameChars()));
+            string tempRoot = Path.Combine(Path.GetTempPath(), "WindowsGSM_PluginSearch", Guid.NewGuid().ToString("N"));
+            string zipPath = Path.Combine(tempRoot, safeName + ".zip");
+
+            Directory.CreateDirectory(tempRoot);
+
+            try
+            {
+                string zipUrl = !string.IsNullOrWhiteSpace(result.ZipUrl)
+                    ? result.ZipUrl
+                    : $"https://github.com/{result.FullName}/archive/refs/heads/{(string.IsNullOrWhiteSpace(result.DefaultBranch) ? "master" : result.DefaultBranch)}.zip";
+
+                await WindowsGSM.Functions.Http.DownloadFileAsync(zipUrl, zipPath, true);
+                string installed = await Task.Run(() => ExtractPluginRepositoryZip(zipPath));
+                return installed;
+            }
+            finally
+            {
+                try { Directory.Delete(tempRoot, true); } catch { }
+            }
+        }
+
+        private static string ExtractPluginRepositoryZip(string zipPath)
+        {
+            Directory.CreateDirectory(ServerPath.GetPlugins());
+
+            using (ZipArchive zip = ZipFile.OpenRead(zipPath))
+            {
+                string pluginFolder = FindPluginFolderInArchive(zip);
+                if (string.IsNullOrWhiteSpace(pluginFolder))
+                {
+                    throw new InvalidOperationException("Could not find a WindowsGSM plugin folder ending in .cs inside this repository.");
+                }
+
+                string pluginName = pluginFolder.TrimEnd('/').Split('/').Last();
+                string destinationRoot = Path.GetFullPath(ServerPath.GetPlugins(pluginName));
+
+                foreach (ZipArchiveEntry entry in zip.Entries)
+                {
+                    string normalizedEntry = entry.FullName.Replace('\\', '/');
+                    int index = normalizedEntry.IndexOf(pluginFolder, StringComparison.OrdinalIgnoreCase);
+                    if (index < 0) { continue; }
+
+                    string relative = normalizedEntry.Substring(index + pluginFolder.Length).TrimStart('/');
+                    if (string.IsNullOrWhiteSpace(relative)) { continue; }
+
+                    string destinationPath = Path.GetFullPath(Path.Combine(destinationRoot, relative.Replace('/', Path.DirectorySeparatorChar)));
+                    if (!destinationPath.StartsWith(destinationRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(destinationPath, destinationRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException("Plugin archive contains an invalid path.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(entry.Name))
+                    {
+                        Directory.CreateDirectory(destinationPath);
+                    }
+                    else
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
+                        entry.ExtractToFile(destinationPath, true);
+                    }
+                }
+
+                return pluginName;
+            }
+        }
+
+        private static string FindPluginFolderInArchive(ZipArchive zip)
+        {
+            foreach (ZipArchiveEntry entry in zip.Entries)
+            {
+                string normalizedEntry = entry.FullName.Replace('\\', '/');
+                string[] parts = normalizedEntry.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 1; i < parts.Length; i++)
+                {
+                    string folder = parts[i];
+                    if (!folder.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) { continue; }
+
+                    string expectedFile = folder;
+                    if (parts.Length > i + 1 && string.Equals(parts[i + 1], expectedFile, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return string.Join("/", parts.Take(i + 1)) + "/";
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private void Button_PluginDetailsOpen_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectedPluginSearchResult == null || string.IsNullOrWhiteSpace(_selectedPluginSearchResult.Url)) { return; }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(_selectedPluginSearchResult.Url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open GitHub repository: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void Button_PluginDetailsClose_Click(object sender, RoutedEventArgs e)
+        {
+            MahAppFlyout_PluginDetails.IsOpen = false;
+        }
+
+        private static string FormatPluginSearchDetail(string value, string fallback)
+        {
+            return string.IsNullOrWhiteSpace(value) ? fallback : value;
+        }
+
+        private static string FormatDate(DateTime? date)
+        {
+            return date.HasValue ? date.Value.ToLocalTime().ToString("yyyy-MM-dd") : "Unknown";
         }
 
         private async void ImportPlugin_Click(object sender, RoutedEventArgs e)
@@ -6656,6 +7021,11 @@ namespace WindowsGSM
             MahAppFlyout_SetAffinity.IsOpen = flyout == MahAppFlyout_SetAffinity && !MahAppFlyout_SetAffinity.IsOpen;
             MahAppFlyout_Settings.IsOpen = flyout == MahAppFlyout_Settings && !MahAppFlyout_Settings.IsOpen;
             MahAppFlyout_ViewPlugins.IsOpen = flyout == MahAppFlyout_ViewPlugins && !MahAppFlyout_ViewPlugins.IsOpen;
+            if (flyout != MahAppFlyout_ViewPlugins)
+            {
+                MahAppFlyout_PluginSearch.IsOpen = false;
+                MahAppFlyout_PluginDetails.IsOpen = false;
+            }
         }
 
         private void HamburgerMenu_ItemClick(object sender, ItemClickEventArgs e)

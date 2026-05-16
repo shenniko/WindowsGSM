@@ -1,170 +1,204 @@
-﻿using Microsoft.Win32;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Management;
 using System.Threading.Tasks;
 
-
-
 namespace WindowsGSM.Functions
 {
-
     class GoogleAnalytics
     {
-        /// <summary>
-        /// https://developers.google.com/analytics/devguides/collection/protocol/v1/devguide
-        /// </summary>
+        public const string MeasurementId = "G-T46K9BQDJK";
+        private const string AnalyticsSchemaVersion = "1";
 
-        private static readonly string _trackingId = "UA-131754595-13";
-        private string _clientId;
-
-        public async void SendWindowsGSMVersion()
+        public Task SendAppStart()
         {
-            string version = MainWindow.WGSM_VERSION;
-            SendHit("WindowsGSMVersion", version, version);
+            var parameters = new Dictionary<string, object>
+            {
+                ["app_version"] = MainWindow.WGSM_VERSION,
+                ["dotnet_version"] = Environment.Version.ToString(),
+                ["analytics_schema_version"] = AnalyticsSchemaVersion
+            };
+
+            AddWindowsOsParameters(parameters);
+            return SendEventAsync("app_start", parameters);
         }
 
-        public async void SendWindowsOS()
+        public Task SendServerCreated(string game, string pluginName, string installMethod, string steamAppId, string branch)
         {
-            await Task.Run(() =>
+            return SendEventAsync("server_created", ServerParameters(game, pluginName, steamAppId, branch, new Dictionary<string, object>
             {
-                // https://stackoverflow.com/questions/2819934/detect-windows-version-in-net
-                string osBit = string.Empty;
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT OSArchitecture FROM Win32_OperatingSystem"))
-                {
-                    ManagementObjectCollection information = searcher.Get();
-                    if (information != null)
-                    {
-                        foreach (ManagementObject obj in information)
-                        {
-                            osBit = obj["OSArchitecture"].ToString();
-                        }
-                    }
-                }
+                ["install_method"] = installMethod
+            }));
+        }
 
-                string osName = new Microsoft.VisualBasic.Devices.ComputerInfo().OSFullName;
-                osBit = new string(osBit.Where(char.IsDigit).ToArray());
-                SendHit("OSVersion", osName, $"{osName} - {osBit}-bit");
+        public Task SendServerDeleted(string game, string pluginName)
+        {
+            return SendEventAsync("server_deleted", ServerParameters(game, pluginName));
+        }
+
+        public Task SendServerStarted(string game, string pluginName, string startMethod, string steamAppId, string branch)
+        {
+            return SendEventAsync("server_started", ServerParameters(game, pluginName, steamAppId, branch, new Dictionary<string, object>
+            {
+                ["start_method"] = startMethod
+            }));
+        }
+
+        public Task SendServerStopped(string game, string pluginName, string stopMethod)
+        {
+            return SendEventAsync("server_stopped", ServerParameters(game, pluginName, extra: new Dictionary<string, object>
+            {
+                ["stop_method"] = stopMethod
+            }));
+        }
+
+        public Task SendServerRestarted(string game, string pluginName, string restartMethod, string steamAppId, string branch)
+        {
+            return SendEventAsync("server_restarted", ServerParameters(game, pluginName, steamAppId, branch, new Dictionary<string, object>
+            {
+                ["restart_method"] = restartMethod
+            }));
+        }
+
+        public Task SendSteamCmdInstall(string game, string pluginName, string steamAppId, string branch, string result, string errorCode = null)
+        {
+            return SendEventAsync("steamcmd_install", ServerParameters(game, pluginName, steamAppId, branch, new Dictionary<string, object>
+            {
+                ["result"] = result,
+                ["error_code"] = errorCode
+            }));
+        }
+
+        public Task SendSteamCmdUpdate(string game, string pluginName, string steamAppId, string branch, bool validate, string result, string errorCode = null)
+        {
+            return SendEventAsync("steamcmd_update", ServerParameters(game, pluginName, steamAppId, branch, new Dictionary<string, object>
+            {
+                ["validate"] = validate,
+                ["result"] = result,
+                ["error_code"] = errorCode
+            }));
+        }
+
+        public Task SendPluginInstalled(string pluginName, string pluginVersion, string source)
+        {
+            return SendEventAsync("plugin_installed", new Dictionary<string, object>
+            {
+                ["plugin_name"] = pluginName,
+                ["plugin_version"] = pluginVersion,
+                ["source"] = source
             });
         }
 
-        public async void SendProcessorName()
+        public Task SendPluginLoadFailed(string pluginName, string errorCode)
         {
-            await Task.Run(() =>
+            return SendEventAsync("plugin_load_failed", new Dictionary<string, object>
             {
-                string cpuName = string.Empty;
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name FROM Win32_Processor"))
-                {
-                    ManagementObjectCollection information = searcher.Get();
-                    if (information != null)
-                    {
-                        foreach (ManagementObject obj in information)
-                        {
-                            cpuName = obj["Name"].ToString();
-                        }
-                    }
-                }
-
-                int coreCount = 0;
-                foreach (var item in new ManagementObjectSearcher("Select NumberOfCores from Win32_Processor").Get())
-                {
-                    coreCount += int.Parse(item["NumberOfCores"].ToString());
-                }
-                
-                SendHit("CPU", cpuName, $"{cpuName} - Cores: {coreCount.ToString()}");
+                ["plugin_name"] = pluginName,
+                ["error_code"] = errorCode
             });
         }
 
-        public async void SendRAM()
+        public Task SendDiscordCommandUsed(string commandName)
         {
-            await Task.Run(() =>
+            return SendEventAsync("discord_command_used", new Dictionary<string, object>
             {
-                int count = 0;
-                double total = new Microsoft.VisualBasic.Devices.ComputerInfo().TotalPhysicalMemory;
-
-                while (total > 1024.0)
-                {
-                    total /= 1024.0;
-                    count++;
-                }
-
-                string memory = Math.Ceiling(total) + (count == 1 ? "KB" : count == 2 ? "MB" : count == 3 ? "GB" : "TB");
-                SendHit("RAM", memory, memory);
+                ["command_name"] = commandName
             });
         }
 
-        public async void SendDisk()
+        public Task SendServerCrashed(string game, string pluginName, string exitCode)
         {
-            await Task.Run(() =>
+            return SendEventAsync("server_crashed", ServerParameters(game, pluginName, extra: new Dictionary<string, object>
             {
-                int diskCount = 0;
-                double total = 0;
+                ["exit_code"] = exitCode
+            }));
+        }
 
-                foreach (DriveInfo info in DriveInfo.GetDrives())
-                {
-                    if (info.IsReady)
-                    {
-                        total += info.TotalSize / 1024.0;
-                        diskCount++;
-                    }
-                }
+        public Task SendBackupCompleted(string game, string pluginName, string result)
+        {
+            return SendEventAsync("backup_completed", ServerParameters(game, pluginName, extra: new Dictionary<string, object>
+            {
+                ["result"] = result
+            }));
+        }
 
-                int count = 0;
-                while (total > 1024.0)
-                {
-                    total /= 1024.0;
-                    count++;
-                }
+        public Task SendRestoreCompleted(string game, string pluginName, string result)
+        {
+            return SendEventAsync("restore_completed", ServerParameters(game, pluginName, extra: new Dictionary<string, object>
+            {
+                ["result"] = result
+            }));
+        }
 
-                string disk = Math.Ceiling(total) + (count == 0 ? "KB" : count == 1 ? "MB" : count == 2 ? "GB" : count == 3 ? "TB" : "PB");
-                SendHit("DISK", disk, $"{disk} - Count: {diskCount}");
+        public Task SendAddonInstalled(string addonName, string game, string result)
+        {
+            return SendEventAsync("addon_installed", new Dictionary<string, object>
+            {
+                ["addon_name"] = addonName,
+                ["game"] = game,
+                ["result"] = result
             });
         }
 
-        public async void SendGameServerInstall(string serverId, string serverGame)
+        public Task SendReadinessCheckCompleted(int passCount, int warningCount, int failCount)
         {
-            await Task.Run(() =>
+            return SendEventAsync("readiness_check_completed", new Dictionary<string, object>
             {
-                SendHit("Install", serverGame, $"{serverGame} #{serverId}");
+                ["pass_count"] = passCount,
+                ["warning_count"] = warningCount,
+                ["fail_count"] = failCount
             });
         }
 
-        public async void SendGameServerStart(string serverId, string serverGame)
+        public Task SendPluginSearchUsed(int resultCount)
         {
-            await Task.Run(() =>
+            return SendEventAsync("plugin_search_used", new Dictionary<string, object>
             {
-                SendHit("Start", serverGame, $"{serverGame} #{serverId}");
+                ["result_count"] = resultCount
             });
         }
 
-        public async void SendGameServerHeartBeat(string serverGame, string serverName)
+        private async Task SendEventAsync(string eventName, Dictionary<string, object> parameters)
         {
-            await Task.Run(() =>
-            {
-                SendHit("HeartBeat", serverGame, serverName);
-            });
-        }
-
-        private async void SendHit(string category, string action, string label, string value = null)
-        {
-            _clientId = string.IsNullOrEmpty(_clientId) ? GetClientID() : _clientId;
-            if (string.IsNullOrEmpty(_clientId)) { return; }
-
-            string post = $"v=1&t=event&tid={_trackingId}&cid={_clientId}";
-            post += string.IsNullOrWhiteSpace(category) ? string.Empty : $"&ec={Uri.EscapeDataString(category)}";
-            post += string.IsNullOrWhiteSpace(action) ? string.Empty : $"&ea={Uri.EscapeDataString(action)}";
-            post += string.IsNullOrWhiteSpace(label) ? string.Empty : $"&el={Uri.EscapeDataString(label)}";
-            post += string.IsNullOrWhiteSpace(value) ? string.Empty : $"&ev={Uri.EscapeDataString(value)}";
+            if (!AnalyticsSettings.IsEnabled) { return; }
 
             try
             {
-                using (var webResponse = await Http.PostFormAsync("https://www.google-analytics.com/collect", post))
+                var settings = AnalyticsSettings.Current;
+                var eventParams = new JObject
                 {
-                    if (!webResponse.IsSuccessStatusCode)
+                    ["measurement_id"] = MeasurementId,
+                    ["engagement_time_msec"] = 1,
+                    ["schema_version"] = AnalyticsSchemaVersion
+                };
+
+                foreach (var parameter in SanitizeParameters(parameters))
+                {
+                    eventParams[parameter.Key] = JToken.FromObject(parameter.Value);
+                }
+
+                var payload = new JObject
+                {
+                    ["client_id"] = settings.ClientId,
+                    ["events"] = new JArray
                     {
-                        Debug.WriteLine((int)webResponse.StatusCode + "Google Analytics tracking did not return OK 200");
+                        new JObject
+                        {
+                            ["name"] = eventName,
+                            ["params"] = eventParams
+                        }
+                    }
+                };
+
+                using (var response = await Http.PostJsonAsync(settings.AnalyticsProxyUrl, payload.ToString(Formatting.None)))
+                {
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Debug.WriteLine((int)response.StatusCode + " analytics proxy did not return success");
                     }
                 }
             }
@@ -174,24 +208,64 @@ namespace WindowsGSM.Functions
             }
         }
 
-        private static string GetClientID()
+        private static Dictionary<string, object> ServerParameters(string game, string pluginName, string steamAppId = null, string branch = null, Dictionary<string, object> extra = null)
         {
-            RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\WindowsGSM", true);
-            if (key == null) { return null; }
-
-            //Get Client ID
-            string clientId = (key.GetValue("ClientID") == null) ? string.Empty : key.GetValue("ClientID").ToString();
-
-            //If Client ID is invalid, set new client id
-            if (string.IsNullOrWhiteSpace(clientId))
+            var parameters = new Dictionary<string, object>
             {
-                clientId = Guid.NewGuid().ToString();
-                key.SetValue("ClientID", clientId);
+                ["game"] = game,
+                ["plugin_name"] = pluginName,
+                ["steam_app_id"] = steamAppId,
+                ["steam_branch"] = string.IsNullOrWhiteSpace(branch) ? "public" : branch
+            };
+
+            if (extra != null)
+            {
+                foreach (var item in extra)
+                {
+                    parameters[item.Key] = item.Value;
+                }
             }
 
-            key.Close();
+            return parameters;
+        }
 
-            return clientId;
+        private static Dictionary<string, object> SanitizeParameters(Dictionary<string, object> parameters)
+        {
+            return (parameters ?? new Dictionary<string, object>())
+                .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Key) && parameter.Value != null)
+                .ToDictionary(
+                    parameter => parameter.Key,
+                    parameter => parameter.Value is string value ? SanitizeValue(value) : parameter.Value);
+        }
+
+        private static string SanitizeValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) { return string.Empty; }
+
+            value = value.Trim();
+            return value.Length <= 100 ? value : value.Substring(0, 100);
+        }
+
+        private static void AddWindowsOsParameters(Dictionary<string, object> parameters)
+        {
+            try
+            {
+                string osBit = string.Empty;
+                using (var searcher = new ManagementObjectSearcher("SELECT OSArchitecture FROM Win32_OperatingSystem"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        osBit = obj["OSArchitecture"]?.ToString() ?? string.Empty;
+                    }
+                }
+
+                string osName = new Microsoft.VisualBasic.Devices.ComputerInfo().OSFullName;
+                parameters["os_version"] = string.IsNullOrWhiteSpace(osBit) ? osName : $"{osName} - {osBit}";
+            }
+            catch
+            {
+                parameters["os_version"] = Environment.OSVersion.VersionString;
+            }
         }
     }
 }

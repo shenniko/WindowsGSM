@@ -133,7 +133,7 @@
                   <mah:ToggleSwitch x:Name="MahAppSwitch_StartOnBoot" Header="Start WindowsGSM on Login" Margin="20,0,0,15" Toggled="StartOnLogin_IsCheckedChanged"/>
                   <mah:ToggleSwitch x:Name="MahAppSwitch_MinimizeOnStart" Header="Minimize on Start" Margin="20,0,0,15" Toggled="MinimizeOnStart_IsCheckedChanged"/>
                   <mah:ToggleSwitch x:Name="MahAppSwitch_RestartOnCrash" Header="Auto Restart WindowsGSM on Crash" Margin="20,0,0,15" Toggled="RestartOnCrash_IsCheckedChanged"/>
-                  <mah:ToggleSwitch x:Name="MahAppSwitch_SendStatistics" Header="Send Statistics" Margin="20,0,0,15" Toggled="SendStatistics_IsCheckedChanged"/>
+                  <mah:ToggleSwitch x:Name="MahAppSwitch_SendStatistics" Header="Send Anonymous Analytics" Margin="20,0,0,15" Toggled="SendStatistics_IsCheckedChanged"/>
                   <mah:ToggleSwitch x:Name="MahAppSwitch_DonorConnect" Header="Donor Connect (Patreon)" Margin="20,0,0,15" Toggled="DonorConnect_IsCheckedChanged"/>
                   <DockPanel Margin="20,0,20,20">
                      <Label Content="WindowsGSM Theme (Donor Only)" FontSize="13.5" Padding="0" DockPanel.Dock="Top"></Label>
@@ -719,6 +719,7 @@
                <MenuItem Header="Tools" Height="30">
                   <MenuItem Header="Readiness Check" Click="Tools_ReadinessCheck_Click"/>
                   <MenuItem Header="Global Server List Check" Click="Tools_GlobalServerListCheck_Click"/>
+                  <MenuItem Header="Analytics Consent" Click="Tools_AnalyticsConsent_Click"/>
                   <MenuItem Header="Install Addons">
                      <MenuItem Header="AMX Mod X + MetaMod-P" Click="Tool_InstallAMXModXMetamodP_Click">
                         <MenuItem.Icon>

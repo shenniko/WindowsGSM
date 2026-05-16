@@ -683,7 +683,7 @@ namespace WindowsGSM
             {
                 if (GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started)
                 {
-                    stopTasks.Add(GameServer_Stop(server));
+                    stopTasks.Add(GameServer_Stop(server, "app_shutdown"));
                 }
             }
 
@@ -766,7 +766,7 @@ namespace WindowsGSM
                 key.SetValue(RegistryKeyName.DonorTheme, "False");
                 key.SetValue(RegistryKeyName.DonorColor, DEFAULT_THEME);
                 key.SetValue(RegistryKeyName.DonorAuthKey, "");
-                key.SetValue(RegistryKeyName.SendStatistics, "True");
+                key.SetValue(RegistryKeyName.SendStatistics, "False");
                 key.SetValue(RegistryKeyName.Height, Height);
                 key.SetValue(RegistryKeyName.Width, Width);
                 key.SetValue(RegistryKeyName.DiscordBotAutoStart, "False");
@@ -784,7 +784,9 @@ namespace WindowsGSM
             MahAppSwitch_DonorConnect.Toggled -= DonorConnect_IsCheckedChanged;
             MahAppSwitch_DonorConnect.IsOn = (key.GetValue(RegistryKeyName.DonorTheme) ?? false).ToString() == "True";
             MahAppSwitch_DonorConnect.Toggled += DonorConnect_IsCheckedChanged;
-            MahAppSwitch_SendStatistics.IsOn = (key.GetValue(RegistryKeyName.SendStatistics) ?? true).ToString() == "True";
+            MahAppSwitch_SendStatistics.Toggled -= SendStatistics_IsCheckedChanged;
+            MahAppSwitch_SendStatistics.IsOn = AnalyticsSettings.Current.AnalyticsEnabled;
+            MahAppSwitch_SendStatistics.Toggled += SendStatistics_IsCheckedChanged;
             MahAppSwitch_DiscordBotAutoStart.IsOn = (key.GetValue(RegistryKeyName.DiscordBotAutoStart) ?? false).ToString() == "True";
             string color = (key.GetValue(RegistryKeyName.DonorColor) ?? string.Empty).ToString();
             comboBox_Themes.SelectionChanged -= ComboBox_Themes_SelectionChanged;
@@ -894,7 +896,7 @@ namespace WindowsGSM
 
             ServerPath.CreateAndFixDirectories();
 
-            LoadPlugins(shouldAwait: false);
+            _ = LoadPlugins(shouldAwait: false);
             AddGamesToComboBox();
 
             LoadServerTable();
@@ -953,10 +955,7 @@ namespace WindowsGSM
 
             AutoStartServer();
 
-            if (MahAppSwitch_SendStatistics.IsOn)
-            {
-                SendGoogleAnalytics();
-            }
+            SendGoogleAnalytics();
 
             StartConsoleRefresh();
 
@@ -976,6 +975,14 @@ namespace WindowsGSM
                 {
                     await RunReadinessChecks();
                     MahAppFlyout_ReadinessCheck.IsOpen = true;
+                }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
+
+            if (!AnalyticsSettings.Current.AnalyticsPromptShown)
+            {
+                Dispatcher.BeginInvoke(new Action(async () =>
+                {
+                    await ShowAnalyticsConsentDialog();
                 }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             }
         }
@@ -1053,7 +1060,7 @@ namespace WindowsGSM
             }
         }
 
-        public async void LoadPlugins(bool shouldAwait = true)
+        public async Task LoadPlugins(bool shouldAwait = true)
         {
             StackPanel_PluginList.Children.Clear();
 
@@ -1069,6 +1076,7 @@ namespace WindowsGSM
                     string logFile = ServerPath.GetLogs(ServerPath.FolderName.Plugins, $"{plugin.FileName}.log");
                     File.WriteAllText(ServerPath.GetLogs(logFile), plugin.Error);
                     Log("Plugins", $"{plugin.FileName} fail to load. Please view the log: {logFile.Replace(WGSM_PATH, string.Empty)}");
+                    _ = TrackAnalytics(analytics => analytics.SendPluginLoadFailed(plugin.FileName, GetAnalyticsErrorCode(plugin.Error)));
                 }
                 else
                 {
@@ -1269,6 +1277,7 @@ namespace WindowsGSM
                 TextBlock_PluginSearchStatus.Text = results.Count == 0
                     ? $"No WindowsGSM.{searchTerm} repositories found."
                     : $"Found {results.Count} WindowsGSM.{searchTerm} repositories.";
+                _ = TrackAnalytics(analytics => analytics.SendPluginSearchUsed(results.Count));
             }
             catch (Exception ex)
             {
@@ -1360,8 +1369,19 @@ namespace WindowsGSM
                 normalizedValue = normalizedValue.Substring(slashIndex + 1);
             }
 
-            return normalizedValue.StartsWith("WindowsGSM.", StringComparison.OrdinalIgnoreCase) &&
-                   normalizedValue.IndexOf(searchTerm.Trim(), StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!normalizedValue.StartsWith("WindowsGSM.", StringComparison.OrdinalIgnoreCase)) { return false; }
+
+            string normalizedRepositoryName = NormalizePluginSearchToken(normalizedValue);
+            string normalizedSearchTerm = NormalizePluginSearchToken(searchTerm);
+            return !string.IsNullOrWhiteSpace(normalizedSearchTerm) &&
+                   normalizedRepositoryName.IndexOf(normalizedSearchTerm, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string NormalizePluginSearchToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) { return string.Empty; }
+
+            return new string(value.Where(char.IsLetterOrDigit).ToArray());
         }
 
         private void PluginSearchResult_Click(object sender, MouseButtonEventArgs e)
@@ -1400,7 +1420,8 @@ namespace WindowsGSM
                 string installedPlugin = await InstallPluginRepository(_selectedPluginSearchResult);
                 TextBlock_PluginSearchStatus.Text = $"Installed {installedPlugin}. Reloading plugins...";
                 Log("Plugins", $"Installed plugin from GitHub: {_selectedPluginSearchResult.FullName}");
-                LoadPlugins();
+                _ = TrackAnalytics(analytics => analytics.SendPluginInstalled(installedPlugin, string.Empty, "github_search"));
+                await LoadPlugins();
                 LoadServerTable();
                 TextBlock_PluginSearchStatus.Text = $"Installed {installedPlugin}.";
                 MahAppFlyout_PluginDetails.IsOpen = false;
@@ -1583,8 +1604,9 @@ namespace WindowsGSM
                 }
 
                 await Task.Delay(500);
-                LoadPlugins();
+                await LoadPlugins();
                 LoadServerTable();
+                _ = TrackAnalytics(analytics => analytics.SendPluginInstalled(dirName, string.Empty, "local_zip"));
 
                 Button_ImportPlugin.IsEnabled = true;
                 ProgressRing_LoadPlugins.Visibility = Visibility.Collapsed;
@@ -1608,7 +1630,7 @@ namespace WindowsGSM
             StackPanel_PluginList.Children.Clear();
 
             await Task.Delay(500);
-            LoadPlugins();
+            await LoadPlugins();
             LoadServerTable();
 
             Button_RefreshPlugins.IsEnabled = true;
@@ -1860,73 +1882,87 @@ namespace WindowsGSM
         {
             var system = new SystemMetrics();
 
-            // Get CPU info and Set
-            await Task.Run(() => system.GetCPUStaticInfo());
-            dashboard_cpu_type.Content = system.CPUType;
+            try
+            {
+                // Get CPU info and Set
+                await Task.Run(() => system.GetCPUStaticInfo());
+                dashboard_cpu_type.Content = system.CPUType;
 
-            // Get RAM info and Set
-            await Task.Run(() => system.GetRAMStaticInfo());
-            dashboard_ram_type.Content = system.RAMType;
+                // Get RAM info and Set
+                await Task.Run(() => system.GetRAMStaticInfo());
+                dashboard_ram_type.Content = system.RAMType;
 
-            // Get Disk info and Set
-            await Task.Run(() => system.GetDiskStaticInfo());
-            dashboard_disk_name.Content = $"({system.DiskName})";
-            dashboard_disk_type.Content = system.DiskType;
+                // Get Disk info and Set
+                await Task.Run(() => system.GetDiskStaticInfo());
+                dashboard_disk_name.Content = $"({system.DiskName})";
+                dashboard_disk_type.Content = system.DiskType;
+            }
+            catch (Exception ex)
+            {
+                Log("System", $"[ERROR] Failed to initialize dashboard metrics: {ex.Message}");
+            }
 
             while (true)
             {
-                dashboard_cpu_bar.Value = await Task.Run(() => system.GetCPUUsage());
-                dashboard_cpu_bar.Value = (dashboard_cpu_bar.Value > 100.0) ? 100.0 : dashboard_cpu_bar.Value;
-                dashboard_cpu_usage.Content = $"{dashboard_cpu_bar.Value}%";
-
-                dashboard_ram_bar.Value = await Task.Run(() => system.GetRAMUsage());
-                dashboard_ram_bar.Value = (dashboard_ram_bar.Value > 100.0) ? 100.0 : dashboard_ram_bar.Value;
-                dashboard_ram_usage.Content = $"{string.Format("{0:0.00}", dashboard_ram_bar.Value)}%";
-                dashboard_ram_ratio.Content = SystemMetrics.GetMemoryRatioString(dashboard_ram_bar.Value, system.RAMTotalSize);
-
-                dashboard_disk_bar.Value = await Task.Run(() => system.GetDiskUsage());
-                dashboard_disk_bar.Value = (dashboard_disk_bar.Value > 100.0) ? 100.0 : dashboard_disk_bar.Value;
-                dashboard_disk_usage.Content = $"{string.Format("{0:0.00}", dashboard_disk_bar.Value)}%";
-                dashboard_disk_ratio.Content = SystemMetrics.GetDiskRatioString(dashboard_disk_bar.Value, system.DiskTotalSize);
-
-                dashboard_servers_bar.Value = ServerGrid.Items.Count * 100.0 / MAX_SERVER;
-                dashboard_servers_bar.Value = (dashboard_servers_bar.Value > 100.0) ? 100.0 : dashboard_servers_bar.Value;
-                dashboard_servers_usage.Content = $"{string.Format("{0:0.00}", dashboard_servers_bar.Value)}%";
-                dashboard_servers_ratio.Content = $"{ServerGrid.Items.Count}/{MAX_SERVER}";
-
-                int startedCount = GetStartedServerCount();
-                dashboard_started_bar.Value = ServerGrid.Items.Count == 0 ? 0 : startedCount * 100.0 / ServerGrid.Items.Count;
-                dashboard_started_bar.Value = (dashboard_started_bar.Value > 100.0) ? 100.0 : dashboard_started_bar.Value;
-                dashboard_started_usage.Content = $"{string.Format("{0:0.00}", dashboard_started_bar.Value)}%";
-                dashboard_started_ratio.Content = $"{startedCount}/{ServerGrid.Items.Count}";
-
-                dashboard_players_count.Content = GetActivePlayers().ToString();
-
-                foreach (ServerTable server in ServerGrid.Items)
+                try
                 {
-                    var serverMetadata = GetServerMetadata(server.ID);
-                    if (serverMetadata.ServerStatus == ServerStatus.Started && serverMetadata.Process != null && !serverMetadata.Process.HasExited)
-                    {
-                        try
-                        {
-                            var uptime = DateTime.Now - serverMetadata.Process.StartTime;
-                            server.Uptime = $"{(int)uptime.TotalDays}d {uptime.Hours}h {uptime.Minutes}m {uptime.Seconds}s";
-                        }
-                        catch
-                        {
-                            server.Uptime = "N/A";
-                        }
-                    }
-                    else
-                    {
-                        server.Uptime = string.Empty;
-                    }
-                }
-                ServerGrid.Items.Refresh();
+                    dashboard_cpu_bar.Value = await Task.Run(() => system.GetCPUUsage());
+                    dashboard_cpu_bar.Value = (dashboard_cpu_bar.Value > 100.0) ? 100.0 : dashboard_cpu_bar.Value;
+                    dashboard_cpu_usage.Content = $"{dashboard_cpu_bar.Value}%";
 
-                CaptureServerResourceSamples();
-                Refresh_DashboardResourceChart();
-                Refresh_DashBoard_LiveChart();
+                    dashboard_ram_bar.Value = await Task.Run(() => system.GetRAMUsage());
+                    dashboard_ram_bar.Value = (dashboard_ram_bar.Value > 100.0) ? 100.0 : dashboard_ram_bar.Value;
+                    dashboard_ram_usage.Content = $"{string.Format("{0:0.00}", dashboard_ram_bar.Value)}%";
+                    dashboard_ram_ratio.Content = SystemMetrics.GetMemoryRatioString(dashboard_ram_bar.Value, system.RAMTotalSize);
+
+                    dashboard_disk_bar.Value = await Task.Run(() => system.GetDiskUsage());
+                    dashboard_disk_bar.Value = (dashboard_disk_bar.Value > 100.0) ? 100.0 : dashboard_disk_bar.Value;
+                    dashboard_disk_usage.Content = $"{string.Format("{0:0.00}", dashboard_disk_bar.Value)}%";
+                    dashboard_disk_ratio.Content = SystemMetrics.GetDiskRatioString(dashboard_disk_bar.Value, system.DiskTotalSize);
+
+                    dashboard_servers_bar.Value = ServerGrid.Items.Count * 100.0 / MAX_SERVER;
+                    dashboard_servers_bar.Value = (dashboard_servers_bar.Value > 100.0) ? 100.0 : dashboard_servers_bar.Value;
+                    dashboard_servers_usage.Content = $"{string.Format("{0:0.00}", dashboard_servers_bar.Value)}%";
+                    dashboard_servers_ratio.Content = $"{ServerGrid.Items.Count}/{MAX_SERVER}";
+
+                    int startedCount = GetStartedServerCount();
+                    dashboard_started_bar.Value = ServerGrid.Items.Count == 0 ? 0 : startedCount * 100.0 / ServerGrid.Items.Count;
+                    dashboard_started_bar.Value = (dashboard_started_bar.Value > 100.0) ? 100.0 : dashboard_started_bar.Value;
+                    dashboard_started_usage.Content = $"{string.Format("{0:0.00}", dashboard_started_bar.Value)}%";
+                    dashboard_started_ratio.Content = $"{startedCount}/{ServerGrid.Items.Count}";
+
+                    dashboard_players_count.Content = GetActivePlayers().ToString();
+
+                    foreach (ServerTable server in ServerGrid.Items)
+                    {
+                        var serverMetadata = GetServerMetadata(server.ID);
+                        if (serverMetadata.ServerStatus == ServerStatus.Started && serverMetadata.Process != null && !serverMetadata.Process.HasExited)
+                        {
+                            try
+                            {
+                                var uptime = DateTime.Now - serverMetadata.Process.StartTime;
+                                server.Uptime = $"{(int)uptime.TotalDays}d {uptime.Hours}h {uptime.Minutes}m {uptime.Seconds}s";
+                            }
+                            catch
+                            {
+                                server.Uptime = "N/A";
+                            }
+                        }
+                        else
+                        {
+                            server.Uptime = string.Empty;
+                        }
+                    }
+                    ServerGrid.Items.Refresh();
+
+                    CaptureServerResourceSamples();
+                    Refresh_DashboardResourceChart();
+                    Refresh_DashBoard_LiveChart();
+                }
+                catch (Exception ex)
+                {
+                    Log("System", $"[ERROR] Dashboard refresh failed: {ex.Message}");
+                }
 
                 await Task.Delay(1000);
             }
@@ -2318,19 +2354,113 @@ namespace WindowsGSM
 
         private async void SendGoogleAnalytics()
         {
+            await TrackAnalytics(analytics => analytics.SendAppStart());
+        }
+
+        private async Task TrackAnalytics(Func<GoogleAnalytics, Task> action)
+        {
+            if (!AnalyticsSettings.IsEnabled || action == null) { return; }
+
             try
             {
-                var analytics = new GoogleAnalytics();
-                analytics.SendWindowsOS();
-                analytics.SendWindowsGSMVersion();
-                analytics.SendProcessorName();
-                analytics.SendRAM();
-                analytics.SendDisk();
+                await action(new GoogleAnalytics());
             }
             catch
             {
-                // i basically just don't care when google analytics fail
+                // Analytics must never affect WindowsGSM behavior.
             }
+        }
+
+        private Dictionary<string, string> GetAnalyticsServerContext(ServerTable server, dynamic gameServer = null)
+        {
+            string steamAppId = string.Empty;
+            try
+            {
+                gameServer = gameServer ?? GameServer.Data.Class.Get(server.Game, new ServerConfig(server.ID), PluginsList);
+                steamAppId = GetSteamAppId(gameServer);
+            }
+            catch
+            {
+                // Best-effort metadata only.
+            }
+
+            PluginMetadata plugin = GetPluginMetadataForGame(server?.Game);
+            return new Dictionary<string, string>
+            {
+                ["game"] = server?.Game ?? string.Empty,
+                ["plugin_name"] = plugin?.Plugin?.name ?? string.Empty,
+                ["plugin_version"] = plugin?.Plugin?.version ?? string.Empty,
+                ["steam_app_id"] = steamAppId ?? string.Empty,
+                ["steam_branch"] = server == null ? string.Empty : ServerConfig.GetSetting(server.ID, ServerConfig.SettingName.SteamBranch)
+            };
+        }
+
+        private PluginMetadata GetPluginMetadataForGame(string game)
+        {
+            if (string.IsNullOrWhiteSpace(game)) { return null; }
+
+            return PluginsList.FirstOrDefault(plugin =>
+                plugin?.Plugin != null &&
+                (string.Equals(plugin.FullName, game, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(plugin.Plugin.name, game, StringComparison.OrdinalIgnoreCase) ||
+                 game.StartsWith(plugin.Plugin.name + " ", StringComparison.OrdinalIgnoreCase) ||
+                 game.StartsWith(plugin.Plugin.name + " [", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private void TrackAddonInstall(ServerTable server, string addonName, bool installed)
+        {
+            if (server == null) { return; }
+
+            _ = TrackAnalytics(analytics => analytics.SendAddonInstalled(
+                addonName,
+                server.Game,
+                installed ? "succeeded" : "failed"));
+        }
+
+        private void TrackBackupCompleted(ServerTable server, bool succeeded)
+        {
+            if (server == null) { return; }
+
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server);
+            _ = TrackAnalytics(analytics => analytics.SendBackupCompleted(
+                analyticsContext["game"],
+                analyticsContext["plugin_name"],
+                succeeded ? "succeeded" : "failed"));
+        }
+
+        private void TrackRestoreCompleted(ServerTable server, bool succeeded)
+        {
+            if (server == null) { return; }
+
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server);
+            _ = TrackAnalytics(analytics => analytics.SendRestoreCompleted(
+                analyticsContext["game"],
+                analyticsContext["plugin_name"],
+                succeeded ? "succeeded" : "failed"));
+        }
+
+        private static string GetAnalyticsStartMethod(string notes)
+        {
+            if (string.IsNullOrWhiteSpace(notes)) { return "ui"; }
+            if (notes.IndexOf("Auto Start", StringComparison.OrdinalIgnoreCase) >= 0) { return "auto_start"; }
+            if (notes.IndexOf("Discord", StringComparison.OrdinalIgnoreCase) >= 0) { return "discord"; }
+            if (notes.IndexOf("Update on Start", StringComparison.OrdinalIgnoreCase) >= 0) { return "update_on_start"; }
+            return "ui";
+        }
+
+        private static string GetAnalyticsErrorCode(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) { return string.Empty; }
+
+            string normalized = new string(error
+                .Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-' || char.IsWhiteSpace(c))
+                .ToArray())
+                .Trim();
+
+            if (string.IsNullOrWhiteSpace(normalized)) { return "unknown"; }
+
+            string firstWords = string.Join("_", normalized.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Take(5));
+            return firstWords.Length <= 60 ? firstWords : firstWords.Substring(0, 60);
         }
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -2604,25 +2734,19 @@ namespace WindowsGSM
 
                 LoadServerTable();
                 Log(newServerConfig.ServerID, "Install: Success");
+                string installSteamAppId = GetSteamAppId(gameServer);
+                PluginMetadata installPlugin = GetPluginMetadataForGame(servergame);
+                _ = TrackAnalytics(analytics => analytics.SendServerCreated(servergame, installPlugin?.Plugin?.name, "install", installSteamAppId, steamBranch));
+                if (!string.IsNullOrWhiteSpace(installSteamAppId))
+                {
+                    _ = TrackAnalytics(analytics => analytics.SendSteamCmdInstall(servergame, installPlugin?.Plugin?.name, installSteamAppId, steamBranch, "succeeded"));
+                }
 
                 MahAppFlyout_InstallGameServer.IsOpen = false;
                 textbox_InstallServerName.IsEnabled = true;
                 comboBox_InstallGameServer.IsEnabled = true;
                 stackPanel_InstallSteamBranch.IsEnabled = true;
                 progressbar_InstallProgress.IsIndeterminate = false;
-
-                if (MahAppSwitch_SendStatistics.IsOn)
-                {
-                    try
-                    {
-                        var analytics = new GoogleAnalytics();
-                        analytics.SendGameServerInstall(newServerConfig.ServerID, servergame);
-                    }
-                    catch
-                    {
-                        // i basically just don't care when google analytics fail
-                    }
-                }
             }
             else
             {
@@ -2638,6 +2762,12 @@ namespace WindowsGSM
                 {
                     operationError = "Exit code: " + Installer.ExitCode;
                     textblock_InstallProgress.Text = "Fail to install [ERROR] " + operationError;
+                    string failedSteamAppId = GetSteamAppId(gameServer);
+                    if (!string.IsNullOrWhiteSpace(failedSteamAppId))
+                    {
+                        PluginMetadata failedPlugin = GetPluginMetadataForGame(servergame);
+                        _ = TrackAnalytics(analytics => analytics.SendSteamCmdInstall(servergame, failedPlugin?.Plugin?.name, failedSteamAppId, steamBranch, "failed", Installer.ExitCode.ToString()));
+                    }
                 }
                 else
                 {
@@ -2648,6 +2778,12 @@ namespace WindowsGSM
                     AppendInstallLogLine($"Install validation failed: {installError}");
                     WriteInstallFailureReport(newServerConfig, servergame, servername, steamBranch, installError, Installer?.ExitCode);
                     operationError = installError;
+                    string failedSteamAppId = GetSteamAppId(gameServer);
+                    if (!string.IsNullOrWhiteSpace(failedSteamAppId))
+                    {
+                        PluginMetadata failedPlugin = GetPluginMetadataForGame(servergame);
+                        _ = TrackAnalytics(analytics => analytics.SendSteamCmdInstall(servergame, failedPlugin?.Plugin?.name, failedSteamAppId, steamBranch, "failed", GetAnalyticsErrorCode(installError)));
+                    }
                 }
             }
             }
@@ -2961,6 +3097,9 @@ namespace WindowsGSM
 
             LoadServerTable();
             Log(newServerConfig.ServerID, "Import: Success");
+            string importSteamAppId = GetSteamAppId(gameServer);
+            PluginMetadata importPlugin = GetPluginMetadataForGame(servergame);
+            _ = TrackAnalytics(analytics => analytics.SendServerCreated(servergame, importPlugin?.Plugin?.name, "import", importSteamAppId, string.Empty));
 
             MahAppFlyout_ImportGameServer.IsOpen = false;
             textbox_ImportServerName.IsEnabled = true;
@@ -3561,19 +3700,6 @@ namespace WindowsGSM
 
             StartQuery(server);
 
-            if (MahAppSwitch_SendStatistics.IsOn)
-            {
-                try
-                {
-                    var analytics = new GoogleAnalytics();
-                    analytics.SendGameServerStart(server.ID, server.Game);
-                }
-                catch
-                {
-                    // i basically just don't care when google analytics fail
-                }
-            }
-
             return gameServer;
         }
 
@@ -3582,7 +3708,7 @@ namespace WindowsGSM
             return double.TryParse(input.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out value);
         }
 
-        public async Task<bool> Server_BeginStop(ServerTable server, Process p)
+        public async Task<bool> Server_BeginStop(ServerTable server, Process p, bool forceKill = true)
         {
             _serverMetadata[int.Parse(server.ID)].Process = null;
 
@@ -3598,6 +3724,11 @@ namespace WindowsGSM
             }
             catch (Exception)
             {
+                if (!forceKill)
+                {
+                    return false;
+                }
+
                 ProcessManagement.StopProcess(p);//no stop function most likely, try windows graceful shutdown
             }
 
@@ -3610,11 +3741,125 @@ namespace WindowsGSM
 
             if (p != null && !p.HasExited)
             {
-                p.Kill();
+                if (forceKill)
+                {
+                    p.Kill();
+                }
+
                 return false;
             }
 
             return true;
+        }
+
+        private async Task<bool> Server_StopForAutoUpdate(ServerTable server)
+        {
+            int serverId = int.Parse(server.ID);
+            Process p = GetServerMetadata(server.ID).Process;
+            if (p == null)
+            {
+                Log(server.ID, "Server: Skip auto update");
+                Log(server.ID, "[ERROR] Cannot stop server before auto update because no running process is tracked.");
+                return false;
+            }
+
+            if (p.HasExited)
+            {
+                _serverMetadata[serverId].Process = null;
+                _serverMetadata[serverId].ServerStatus = ServerStatus.Stopped;
+                SetServerStatus(server, "Stopped");
+                Log(server.ID, "Server: Skip auto update");
+                Log(server.ID, "[NOTICE] Tracked server process had already exited before auto update.");
+                return false;
+            }
+
+            _serverMetadata[serverId].ServerStatus = ServerStatus.Stopping;
+            Log(server.ID, "Action: Stop | Auto Update");
+            SetServerStatus(server, "Stopping");
+
+            bool stopGracefully = await Server_RequestGracefulStop(server, p);
+            await WaitForProcessExit(p, 10000);
+            if (p != null && !p.HasExited)
+            {
+                Log(server.ID, "[NOTICE] Server is still running after 10 seconds. Trying console stop signal.");
+                stopGracefully = Server_RequestConsoleStopSignal(p) && stopGracefully;
+                await WaitForProcessExit(p, 10000);
+            }
+
+            if (p != null && !p.HasExited)
+            {
+                Log(server.ID, "[NOTICE] Server is still running after another 10 seconds. Trying graceful stop one last time.");
+                bool finalPluginStop = await Server_RequestGracefulStop(server, p);
+                bool finalConsoleStop = p.HasExited || Server_RequestConsoleStopSignal(p);
+                stopGracefully = finalPluginStop && finalConsoleStop && stopGracefully;
+            }
+
+            if (p != null && !p.HasExited)
+            {
+                _serverMetadata[serverId].Process = p;
+                _serverMetadata[serverId].ServerStatus = ServerStatus.Started;
+                ServerCache.SavePID(server.ID, p.Id);
+                ServerCache.SaveProcessName(server.ID, p.ProcessName);
+                SetServerStatus(server, "Started", p.Id.ToString());
+                Log(server.ID, "Server: Skip auto update");
+                Log(server.ID, "[ERROR] Server process is still running after graceful stop attempt. Update was not started.");
+                return false;
+            }
+
+            Log(server.ID, "Server: Stopped | Auto Update");
+            if (!stopGracefully)
+            {
+                Log(server.ID, "[NOTICE] Server stopped after a non-standard stop path before auto update.");
+            }
+
+            _serverMetadata[serverId].Process = null;
+            _serverMetadata[serverId].ServerConsole.Clear();
+            ServerCache.SavePID(server.ID, -1);
+            ServerCache.SaveProcessName(server.ID, string.Empty);
+            ServerCache.SaveWindowsIntPtr(server.ID, (IntPtr)0);
+            _serverMetadata[serverId].ServerStatus = ServerStatus.Stopped;
+            SetServerStatus(server, "Stopped");
+            return true;
+        }
+
+        private async Task<bool> Server_RequestGracefulStop(ServerTable server, Process p)
+        {
+            try
+            {
+                dynamic gameServer = GameServer.Data.Class.Get(server.Game, pluginList: PluginsList);
+                await gameServer.Stop(p);
+                return true;
+            }
+            catch
+            {
+                return Server_RequestConsoleStopSignal(p);
+            }
+        }
+
+        private static bool Server_RequestConsoleStopSignal(Process p)
+        {
+            try
+            {
+                return p == null || p.HasExited || ProcessManagement.SendStopSignal(p);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task WaitForProcessExit(Process p, int milliseconds)
+        {
+            if (p == null || p.HasExited) { return; }
+
+            try
+            {
+                await Task.Run(() => p.WaitForExit(milliseconds));
+            }
+            catch
+            {
+                // Process state can race with exit; callers should check HasExited after waiting.
+            }
         }
 
         private async Task<(Process, string, dynamic)> Server_BeginUpdate(ServerTable server, bool silenceCheck, bool forceUpdate, bool validate = false, string custum = null)
@@ -3718,9 +3963,16 @@ namespace WindowsGSM
                 Log(server.ID, "[Notice] " + gameServer.Notice);
             }
             SetServerStatus(server, "Started", ServerCache.GetPID(server.ID).ToString());
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server, gameServer);
+            _ = TrackAnalytics(analytics => analytics.SendServerStarted(
+                analyticsContext["game"],
+                analyticsContext["plugin_name"],
+                GetAnalyticsStartMethod(notes),
+                analyticsContext["steam_app_id"],
+                analyticsContext["steam_branch"]));
         }
 
-        private async Task GameServer_Stop(ServerTable server)
+        private async Task GameServer_Stop(ServerTable server, string stopMethod = "ui")
         {
             if (GetServerMetadata(server.ID).ServerStatus != ServerStatus.Started) { return; }
 
@@ -3741,9 +3993,14 @@ namespace WindowsGSM
             }
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
             SetServerStatus(server, "Stopped");
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server);
+            _ = TrackAnalytics(analytics => analytics.SendServerStopped(
+                analyticsContext["game"],
+                analyticsContext["plugin_name"],
+                stopMethod));
         }
 
-        private async Task GameServer_Restart(ServerTable server)
+        private async Task GameServer_Restart(ServerTable server, string restartMethod = "ui")
         {
             if (GetServerMetadata(server.ID).ServerStatus != ServerStatus.Started) { return; }
 
@@ -3783,6 +4040,13 @@ namespace WindowsGSM
                 Log(server.ID, "[Notice] " + gameServer.Notice);
             }
             SetServerStatus(server, "Started", ServerCache.GetPID(server.ID).ToString());
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server, gameServer);
+            _ = TrackAnalytics(analytics => analytics.SendServerRestarted(
+                analyticsContext["game"],
+                analyticsContext["plugin_name"],
+                restartMethod,
+                analyticsContext["steam_app_id"],
+                analyticsContext["steam_branch"]));
         }
 
         public async Task<bool> GameServer_Update(ServerTable server, string notes = "", bool validate = false)
@@ -3798,30 +4062,47 @@ namespace WindowsGSM
             SetServerStatus(server, "Updating");
 
             var (p, remoteVersion, gameServer) = await Server_BeginUpdate(server, silenceCheck: validate, forceUpdate: true, validate: validate);
+            string steamAppId = GetSteamAppId(gameServer);
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server, gameServer);
 
             if (p == null && string.IsNullOrEmpty(gameServer.Error)) // Update success (non-steamcmd server)
             {
                 MarkSteamBranchInstalledIfNeeded(server.ID, gameServer);
                 Log(server.ID, $"Server: Updated {(validate ? "Validate " : string.Empty)}{GetSteamBranchLogSuffix(gameServer, server.ID)}to build {remoteVersion}");
+                if (!string.IsNullOrWhiteSpace(steamAppId))
+                {
+                    _ = TrackAnalytics(analytics => analytics.SendSteamCmdUpdate(analyticsContext["game"], analyticsContext["plugin_name"], steamAppId, analyticsContext["steam_branch"], validate, "succeeded"));
+                }
             }
             else if (p != null) // p stores process of steamcmd
             {
-                await Task.Run(() => { p.WaitForExit(); });
                 if (p.ExitCode == 0)
                 {
                     MarkSteamBranchInstalledIfNeeded(server.ID, gameServer);
                     Log(server.ID, $"Server: Updated {(validate ? "Validate " : string.Empty)}{GetSteamBranchLogSuffix(gameServer, server.ID)}to build {remoteVersion}");
+                    if (!string.IsNullOrWhiteSpace(steamAppId))
+                    {
+                        _ = TrackAnalytics(analytics => analytics.SendSteamCmdUpdate(analyticsContext["game"], analyticsContext["plugin_name"], steamAppId, analyticsContext["steam_branch"], validate, "succeeded"));
+                    }
                 }
                 else
                 {
                     Log(server.ID, "Server: Fail to update");
                     Log(server.ID, $"[ERROR] SteamCMD exited with code {p.ExitCode}");
+                    if (!string.IsNullOrWhiteSpace(steamAppId))
+                    {
+                        _ = TrackAnalytics(analytics => analytics.SendSteamCmdUpdate(analyticsContext["game"], analyticsContext["plugin_name"], steamAppId, analyticsContext["steam_branch"], validate, "failed", p.ExitCode.ToString()));
+                    }
                 }
             }
             else
             {
                 Log(server.ID, "Server: Fail to update");
                 Log(server.ID, "[ERROR] " + gameServer.Error);
+                if (!string.IsNullOrWhiteSpace(steamAppId))
+                {
+                    _ = TrackAnalytics(analytics => analytics.SendSteamCmdUpdate(analyticsContext["game"], analyticsContext["plugin_name"], steamAppId, analyticsContext["steam_branch"], validate, "failed", GetAnalyticsErrorCode(gameServer.Error)));
+                }
             }
 
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
@@ -3899,6 +4180,7 @@ namespace WindowsGSM
                 Log(server.ID, "Server: Fail to backup");
                 Log(server.ID, "[ERROR] Backup location not accessible: " + ex.Message);
                 SetServerStatus(server, "Stopped");
+                TrackBackupCompleted(server, false);
                 return false;
             }
 
@@ -3954,12 +4236,14 @@ namespace WindowsGSM
                     Log(server.ID, "Server: Fail to backup");
                     Log(server.ID, $"[ERROR] {error}");
                     SetServerStatus(server, "Stopped");
+                    TrackBackupCompleted(server, false);
                     return false;
                 }
 
                 _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                 Log(server.ID, "Server: Backuped");
                 SetServerStatus(server, "Stopped");
+                TrackBackupCompleted(server, true);
                 return true;
             }
 
@@ -4057,6 +4341,7 @@ namespace WindowsGSM
                     Log(server.ID, "Server: Fail to backup");
                     Log(server.ID, $"[ERROR] {error}");
                     SetServerStatus(server, "Stopped");
+                    TrackBackupCompleted(server, false);
                     return false;
                 }
             }
@@ -4066,12 +4351,14 @@ namespace WindowsGSM
                 Log(server.ID, "Server: Fail to backup");
                 Log(server.ID, $"[ERROR] {ex.Message}");
                 SetServerStatus(server, "Stopped");
+                TrackBackupCompleted(server, false);
                 return false;
             }
 
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
             Log(server.ID, "Server: Backuped");
             SetServerStatus(server, "Stopped");
+            TrackBackupCompleted(server, true);
             return true;
         }
 
@@ -4148,6 +4435,7 @@ namespace WindowsGSM
             {
                 Log(server.ID, "Server: Fail to restore backup");
                 Log(server.ID, "[ERROR] Backup not found");
+                TrackRestoreCompleted(server, false);
                 return false;
             }
 
@@ -4196,6 +4484,7 @@ namespace WindowsGSM
                     Log(server.ID, $"[ERROR] {error}");
                     SetServerStatus(server, "Stopped");
                     try { Directory.Delete(tempRoot, true); } catch { }
+                    TrackRestoreCompleted(server, false);
                     return false;
                 }
 
@@ -4232,6 +4521,7 @@ namespace WindowsGSM
                         Log(server.ID, $"[ERROR] {error}");
                         SetServerStatus(server, "Stopped");
                         try { Directory.Delete(tempRoot, true); } catch { }
+                        TrackRestoreCompleted(server, false);
                         return false;
                     }
 
@@ -4256,12 +4546,14 @@ namespace WindowsGSM
                         Log(server.ID, "Server: Fail to restore backup");
                         Log(server.ID, $"[ERROR] {error}");
                         SetServerStatus(server, "Stopped");
+                        TrackRestoreCompleted(server, false);
                         return false;
                     }
 
                     _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                     Log(server.ID, "Server: Restored");
                     SetServerStatus(server, "Stopped");
+                    TrackRestoreCompleted(server, true);
                     return true;
                 }
 
@@ -4324,11 +4616,13 @@ namespace WindowsGSM
                 Log(server.ID, "Server: Fail to restore backup");
                 Log(server.ID, $"[ERROR] {error}");
                 SetServerStatus(server, "Stopped");
+                TrackRestoreCompleted(server, false);
                 return false;
             }
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
             Log(server.ID, "Server: Restored");
             SetServerStatus(server, "Stopped");
+            TrackRestoreCompleted(server, true);
             return true;
         }
 
@@ -4343,6 +4637,7 @@ namespace WindowsGSM
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Deleting;
             Log(server.ID, "Action: Delete");
             SetServerStatus(server, "Deleting");
+            Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server);
 
             //Remove firewall rule
             var firewall = new WindowsFirewall(null, ServerPath.GetServers(server.ID));
@@ -4387,6 +4682,7 @@ namespace WindowsGSM
             }
 
             Log(server.ID, "Server: Deleted server");
+            _ = TrackAnalytics(analytics => analytics.SendServerDeleted(analyticsContext["game"], analyticsContext["plugin_name"]));
 
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
             SetServerStatus(server, "Stopped");
@@ -4416,6 +4712,11 @@ namespace WindowsGSM
                     {
                         Log(server.ID, $"[ERROR] Crash details: {crashLog}");
                     }
+                    Dictionary<string, string> analyticsContext = GetAnalyticsServerContext(server);
+                    _ = TrackAnalytics(analytics => analytics.SendServerCrashed(
+                        analyticsContext["game"],
+                        analyticsContext["plugin_name"],
+                        string.IsNullOrWhiteSpace(exitCode) ? "unknown" : exitCode));
                     SetServerStatus(server, autoRestart ? "Restarting" : "Stopped");
 
                     if (GetServerMetadata(serverId).DiscordAlert && GetServerMetadata(serverId).CrashAlert)
@@ -4492,14 +4793,11 @@ namespace WindowsGSM
         {
             int serverId = int.Parse(server.ID);
 
-            //Save the process of game server
-            Process p = GetServerMetadata(server.ID).Process;
-
             dynamic gameServer = GameServer.Data.Class.Get(server.Game, new ServerConfig(server.ID), PluginsList);
 
             string localVersion = gameServer.GetLocalBuild();
 
-            while (p != null && !p.HasExited)
+            while (true)
             {
                 await Task.Delay(60000 * UPDATE_INTERVAL_MINUTE);
 
@@ -4508,6 +4806,7 @@ namespace WindowsGSM
                     continue;
                 }
 
+                Process p = GetServerMetadata(server.ID).Process;
                 if (p == null || p.HasExited) { break; }
 
                 //Try to get local build again if not found just now
@@ -4539,18 +4838,9 @@ namespace WindowsGSM
 
                     if (steamBranchChanged || localVersion != remoteVersion)
                     {
-                        _serverMetadata[int.Parse(server.ID)].Process = null;
-
-                        //Begin stop
-                        _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopping;
-                        SetServerStatus(server, "Stopping");
-
-                        //Stop the server
-                        await Server_BeginStop(server, p);
-
-                        if (p != null && !p.HasExited)
+                        if (!await Server_StopForAutoUpdate(server))
                         {
-                            p.Kill();
+                            continue;
                         }
 
                         _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Updating;
@@ -4558,15 +4848,16 @@ namespace WindowsGSM
 
                         //Update the server
                         Process updateProcess = await gameServer.Update();
+                        bool updateSucceeded = false;
                         int? updateExitCode = null;
                         if (updateProcess != null)
                         {
-                            await Task.Run(() => updateProcess.WaitForExit());
                             updateExitCode = updateProcess.ExitCode;
                         }
 
                         if (string.IsNullOrWhiteSpace(gameServer.Error) && (!updateExitCode.HasValue || updateExitCode.Value == 0))
                         {
+                            updateSucceeded = true;
                             MarkSteamBranchInstalledIfNeeded(server.ID, gameServer);
                             Log(server.ID, $"Server: Updated {GetSteamBranchLogSuffix(gameServer, server.ID)}to build {remoteVersion}");
 
@@ -4584,6 +4875,11 @@ namespace WindowsGSM
                         }
 
                         //Start the server
+                        if (!updateSucceeded)
+                        {
+                            Log(server.ID, "[NOTICE] Restarting server after failed auto update attempt.");
+                        }
+
                         _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Starting;
                         SetServerStatus(server, "Starting");
 
@@ -4621,19 +4917,6 @@ namespace WindowsGSM
 
             while (p != null && !p.HasExited)
             {
-                if (MahAppSwitch_SendStatistics.IsOn)
-                {
-                    try
-                    {
-                        var analytics = new GoogleAnalytics();
-                        analytics.SendGameServerHeartBeat(server.Game, server.Name);
-                    }
-                    catch
-                    {
-                        // i basically just don't care when google analytics fail
-                    }
-                }
-
                 await Task.Delay(300000);
             }
         }
@@ -5222,6 +5505,8 @@ namespace WindowsGSM
 
         private void SendStatistics_IsCheckedChanged(object sender, EventArgs e)
         {
+            AnalyticsSettings.SetConsent(MahAppSwitch_SendStatistics.IsOn);
+
             using (var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\WindowsGSM", true))
             {
                 key?.SetValue(RegistryKeyName.SendStatistics, MahAppSwitch_SendStatistics.IsOn.ToString());
@@ -5431,6 +5716,45 @@ namespace WindowsGSM
             MahAppFlyout_ReadinessCheck.IsOpen = true;
         }
 
+        private async void Tools_AnalyticsConsent_Click(object sender, RoutedEventArgs e)
+        {
+            await ShowAnalyticsConsentDialog();
+        }
+
+        private async Task ShowAnalyticsConsentDialog()
+        {
+            var settings = new MetroDialogSettings
+            {
+                AffirmativeButtonText = "Yes",
+                NegativeButtonText = "No",
+                DefaultButtonFocus = AnalyticsSettings.Current.AnalyticsEnabled
+                    ? MessageDialogResult.Affirmative
+                    : MessageDialogResult.Negative
+            };
+
+            string message =
+                "Help improve WindowsGSM by sending anonymous usage and error analytics?\n\n" +
+                "WindowsGSM may send:\n" +
+                "- Anonymous client ID\n" +
+                "- WindowsGSM app version and Windows OS version\n" +
+                "- Game/plugin type when servers are created, deleted, started, stopped, restarted, installed, or updated\n" +
+                "- Steam app ID and selected branch for SteamCMD installs/updates\n" +
+                "- Plugin install/load failure event names and non-sensitive error codes\n" +
+                "- Discord command names, not message contents or user IDs\n\n" +
+                "WindowsGSM will not send:\n" +
+                "- Server names, IP addresses, ports, or file paths\n" +
+                "- Console commands or Discord message contents\n" +
+                "- Discord usernames, user IDs, webhook URLs, tokens, passwords, or config contents";
+
+            var result = await this.ShowMessageAsync("Anonymous Analytics", message, MessageDialogStyle.AffirmativeAndNegative, settings);
+            bool enabled = result == MessageDialogResult.Affirmative;
+            AnalyticsSettings.SetConsent(enabled);
+
+            MahAppSwitch_SendStatistics.Toggled -= SendStatistics_IsCheckedChanged;
+            MahAppSwitch_SendStatistics.IsOn = enabled;
+            MahAppSwitch_SendStatistics.Toggled += SendStatistics_IsCheckedChanged;
+        }
+
         private async void Button_ReadinessCheck_Run_Click(object sender, RoutedEventArgs e)
         {
             await RunReadinessChecks();
@@ -5485,6 +5809,7 @@ namespace WindowsGSM
             int warn = results.Count(x => x.Status == ReadinessStatus.Warning);
             int fail = results.Count(x => x.Status == ReadinessStatus.Fail);
             textBlock_ReadinessCheckSummary.Text = $"{pass} passed, {warn} warnings, {fail} failed";
+            _ = TrackAnalytics(analytics => analytics.SendReadinessCheckCompleted(pass, warn, fail));
         }
 
         private void AddAppReadinessChecks(List<ReadinessCheckResult> checks)
@@ -5919,6 +6244,7 @@ namespace WindowsGSM
                 });
 
                 string message = installed ? $"Installed successfully" : $"Fail to install";
+                TrackAddonInstall(server, "AMX Mod X + MetaMod-P", installed);
                 await this.ShowMessageAsync("Tools - Install AMX Mod X & MetaMod-P", $"{message} (ID: {server.ID})");
             }
         }
@@ -5959,6 +6285,7 @@ namespace WindowsGSM
                 });
 
                 var message = installed ? $"Installed successfully" : $"Fail to install";
+                TrackAddonInstall(server, "SourceMod + MetaMod", installed);
                 await this.ShowMessageAsync("Tools - Install SourceMod & MetaMod", $"{message} (ID: {server.ID})");
             }
         }
@@ -5999,6 +6326,7 @@ namespace WindowsGSM
                 });
 
                 string message = installed ? $"Installed successfully" : $"Fail to install";
+                TrackAddonInstall(server, "DayZSAL Mod Server", installed);
                 await this.ShowMessageAsync("Tools - Install DayZSAL Mod Server", $"{message} (ID: {server.ID})");
             }
         }
@@ -6041,6 +6369,7 @@ namespace WindowsGSM
                 });
 
                 string message = installed ? $"Installed successfully" : $"Fail to install";
+                TrackAddonInstall(server, "OxideMod", installed);
                 await this.ShowMessageAsync(messageTitle, $"{message} (ID: {server.ID})");
             }
         }
@@ -6093,6 +6422,7 @@ namespace WindowsGSM
             string message = installed
                 ? "Installed successfully. Windrose+ will be prepared automatically before the next Windrose server start."
                 : "Fail to install";
+            TrackAddonInstall(server, "Windrose+", installed);
             await this.ShowMessageAsync(messageTitle, $"{message} (ID: {server.ID})");
         }
         #endregion
@@ -6925,9 +7255,10 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive START action | {adminName} ({adminID})");
+            _ = TrackAnalytics(analytics => analytics.SendDiscordCommandUsed("start"));
             await RunServerOperation(server, ServerOperationKind.Start, async () =>
             {
-                await GameServer_Start(server);
+                await GameServer_Start(server, " | Discord");
                 return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
             });
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
@@ -6939,9 +7270,10 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive STOP action | {adminName} ({adminID})");
+            _ = TrackAnalytics(analytics => analytics.SendDiscordCommandUsed("stop"));
             await RunServerOperation(server, ServerOperationKind.Stop, async () =>
             {
-                await GameServer_Stop(server);
+                await GameServer_Stop(server, "discord");
                 return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
             });
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
@@ -6953,9 +7285,10 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive RESTART action | {adminName} ({adminID})");
+            _ = TrackAnalytics(analytics => analytics.SendDiscordCommandUsed("restart"));
             await RunServerOperation(server, ServerOperationKind.Restart, async () =>
             {
-                await GameServer_Restart(server);
+                await GameServer_Restart(server, "discord");
                 return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
             });
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started;
@@ -6967,6 +7300,7 @@ namespace WindowsGSM
             if (server == null) { return Task.FromResult(""); }
 
             DiscordBotLog($"Discord: Receive SEND action | {adminName} ({adminID}) | {command}");
+            _ = TrackAnalytics(analytics => analytics.SendDiscordCommandUsed("send"));
             return SendCommandAsync(server, command, waitForDataInMs);
         }
 
@@ -6976,6 +7310,7 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive BACKUP action | {adminName} ({adminID})");
+            _ = TrackAnalytics(analytics => analytics.SendDiscordCommandUsed("backup"));
             await RunServerOperation(server, ServerOperationKind.Backup, () => GameServer_Backup(server));
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
         }
@@ -6986,6 +7321,7 @@ namespace WindowsGSM
             if (server == null) { return false; }
 
             DiscordBotLog($"Discord: Receive UPDATE action | {adminName} ({adminID})");
+            _ = TrackAnalytics(analytics => analytics.SendDiscordCommandUsed("update"));
             await RunServerOperation(server, ServerOperationKind.Update, () => GameServer_Update(server));
             return GetServerMetadata(server.ID).ServerStatus == ServerStatus.Stopped;
         }

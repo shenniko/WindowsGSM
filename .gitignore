@@ -11,3 +11,4 @@ WindowsGSM.sln.DotSettings.user
 *.Backup.tmp
 publish/
 release/
+docs/cloudflare-workers-analytics-proxy.js

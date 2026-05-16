@@ -9,6 +9,7 @@ This folder contains WindowsGSM documentation for users, administrators, and plu
 - [Backups](Backups.md)
 - [Crontab](Crontab.md)
 - [Readiness Checks](ReadinessChecks.md)
+- [Analytics](Analytics.md)
 
 ## Plugin Author Docs
 

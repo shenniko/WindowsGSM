@@ -2,6 +2,17 @@
 
 From `v1.26.3` onward, this file follows normal release-note style entries: newest release first, with changes listed relative to the previous release.
 
+## v1.26.5
+- Removed redundant UpgradeLog.htm.
+- Replaced legacy Universal Analytics calls with opt-in GA4 analytics routed through a Cloudflare Worker proxy, keeping the Measurement Protocol secret out of the app and repository.
+- Added `configs/Analytics.json` for anonymous analytics consent, client ID, and proxy URL storage, plus a first-run consent prompt and `Tools > Analytics Consent`.
+- Added analytics documentation and a Cloudflare Worker proxy template.
+- Added anonymous analytics events for app start, server create/delete/start/stop/restart/crash, SteamCMD install/update, plugin install/load failures/search usage, backup/restore completion, addon installs, readiness check summaries, and Discord command names.
+- Failed SteamCMD updates now delete the server's stale `appmanifest_<appid>.acf` and retry once with validation, recovering from manifest/content-state failures such as `state is 0x6 after update job`.
+- Auto update now refreshes the tracked server process before stopping, logs the auto-stop step, tries plugin stop and console stop signals with 10-second waits between attempts, and skips SteamCMD if the process remains running.
+- SteamCMD update handling now treats `UpdateEx` as a run-to-completion helper, avoiding redundant waits and null-process crashes when SteamCMD cannot start.
+- Auto update now logs when it restarts a server after a failed update attempt.
+
 ## v1.26.4
 
 - Added a plugin search button to the Plugins flyout.
@@ -11,6 +22,8 @@ From `v1.26.3` onward, this file follows normal release-note style entries: newe
 - Added an `Install Plugin` action to plugin repository details.
 - Plugin install downloads the selected GitHub repository archive, finds the WindowsGSM plugin `.cs` folder, extracts it into the local `plugins` folder, and reloads plugins/server definitions.
 - Improved plugin search result card layout so repository metadata no longer collapses into a narrow column.
+- Normalized plugin search matching so multi-word searches can match compact repository names such as `WindowsGSM.7DaysToDie`.
+- Plugin install now waits for plugin reload to finish before rebuilding the server table.
 - Bumped application, assembly, and file versions to `1.26.4`.
 
 ## v1.26.3

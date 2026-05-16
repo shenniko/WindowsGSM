@@ -385,7 +385,7 @@ namespace WindowsGSM.Installer
             return p;
         }
 
-        // New
+        // Runs SteamCMD update to completion. The returned process has already exited.
         public static async Task<(Process, string)> UpdateEx(string serverId, string appId, bool validate = true, bool loginAnonymous = true, string modName = null, string custom = null, bool embedConsole = true)
         {
             custom = EnsureOverrideMinOs(custom);
@@ -404,6 +404,38 @@ namespace WindowsGSM.Installer
             // Fix the SteamCMD issue
             Directory.CreateDirectory(Path.Combine(ServerPath.GetServersServerFiles(serverId), "steamapps"));
 
+            Process p = StartUpdateProcess(serverId, exePath, param, embedConsole);
+            if (p == null)
+            {
+                return (null, "Unable to start steamcmd");
+            }
+
+            await Task.Run(() => p.WaitForExit());
+            if (p.ExitCode == 0 || !TryDeleteAppManifest(serverId, appId, out string manifestMessage))
+            {
+                return (p, null);
+            }
+
+            AddServerConsoleLine(serverId, $"[NOTICE] SteamCMD failed with exit code {p.ExitCode}. {manifestMessage} Retrying update once with validate.");
+
+            string retryParam = GetParameter(ServerPath.GetServersServerFiles(serverId), appId, true, loginAnonymous, modName, custom, serverId);
+            if (retryParam == null)
+            {
+                return (p, "Steam account not set up");
+            }
+
+            Process retryProcess = StartUpdateProcess(serverId, exePath, retryParam, embedConsole);
+            if (retryProcess == null)
+            {
+                return (p, "Unable to restart steamcmd after deleting app manifest");
+            }
+
+            await Task.Run(() => retryProcess.WaitForExit());
+            return (retryProcess, null);
+        }
+
+        private static Process StartUpdateProcess(string serverId, string exePath, string param, bool embedConsole)
+        {
             var p = new Process
             {
                 StartInfo =
@@ -431,11 +463,55 @@ namespace WindowsGSM.Installer
                 p.Start();
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
-                return (p, null);
+                return p;
             }
 
             p.Start();
-            return (p, null);
+            return p;
+        }
+
+        private static bool TryDeleteAppManifest(string serverId, string appId, out string message)
+        {
+            message = string.Empty;
+
+            if (string.IsNullOrWhiteSpace(serverId) || string.IsNullOrWhiteSpace(appId) || !appId.All(char.IsDigit))
+            {
+                return false;
+            }
+
+            string steamAppsPath = Path.Combine(ServerPath.GetServersServerFiles(serverId), "steamapps");
+            string manifestPath = Path.Combine(steamAppsPath, $"appmanifest_{appId}.acf");
+            if (!File.Exists(manifestPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                File.Delete(manifestPath);
+                message = $"Deleted stale Steam app manifest: {manifestPath}.";
+                return true;
+            }
+            catch (Exception e)
+            {
+                message = $"Could not delete Steam app manifest {manifestPath}: {e.Message}.";
+                return false;
+            }
+        }
+
+        private static void AddServerConsoleLine(string serverId, string text)
+        {
+            try
+            {
+                System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    MainWindow._serverMetadata[int.Parse(serverId)].ServerConsole.Add(text);
+                });
+            }
+            catch
+            {
+                // Console output is best-effort; update retry should not fail because the UI is unavailable.
+            }
         }
 
         // Old

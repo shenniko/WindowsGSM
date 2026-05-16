@@ -61,5 +61,13 @@ namespace WindowsGSM.Functions
                 return await Client.PostAsync(url, content);
             }
         }
+
+        public static async Task<HttpResponseMessage> PostJsonAsync(string url, string json)
+        {
+            using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+            {
+                return await Client.PostAsync(url, content);
+            }
+        }
     }
 }
